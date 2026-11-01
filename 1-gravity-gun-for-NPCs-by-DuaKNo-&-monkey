@@ -1,0 +1,3661 @@
+local __ggOk, __ggErr = xpcall(function()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+local SoundService = game:GetService("SoundService")
+local ContentProvider = game:GetService("ContentProvider")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	camera = Workspace.CurrentCamera
+end)
+
+local CONFIG = {
+	ToolName = "Gravity Gun",
+
+	AdminUserIds = {},
+
+	GrabKey = Enum.KeyCode.F,
+	OptionsKey = Enum.KeyCode.O,
+	ToggleViewKey = Enum.KeyCode.C,
+	SpinKey = Enum.KeyCode.B,
+	AxisKey = Enum.KeyCode.N,
+	ResetRotKey = Enum.KeyCode.V,
+	RollKey = Enum.KeyCode.R,
+	PitchKey = Enum.KeyCode.T,
+	RotLeftKey = Enum.KeyCode.Q,
+	RotRightKey = Enum.KeyCode.E,
+	FreezeKey = Enum.KeyCode.G,
+	ZoomKeyIn = Enum.KeyCode.Z,
+	ZoomKeyOut = Enum.KeyCode.X,
+	FlingDownKey = Enum.KeyCode.LeftBracket,
+	FlingUpKey = Enum.KeyCode.RightBracket,
+	SpawnKey = Enum.KeyCode.P,
+	PulseKey = Enum.KeyCode.H,
+	MaxSpawned = 60,
+	UseRightMouse = true,
+
+	GrabRange = 40,
+	MaxMass = math.huge,
+	PullTimeout = 10,
+	PullSpeedMax = 400,
+	MinHoldDistance = 4,
+	MaxHoldDistance = 250,
+	BreakDistance = math.huge,
+	MaxRadius = 120,
+	PuntMassScale = 120000,
+	MaxNoCollide = 2000,
+	MaxLaunchSpeed = 1600,
+	MinFling = 25,
+	MaxFling = 3000,
+
+	ZoomMinFov = 6,
+	ZoomMaxFov = 110,
+	ZoomHoldSpeed = 5,
+
+	OwnershipReleaseDelay = 2.5,
+	NotifyTitle = "Gravity gun",
+	NotifyText = "By Monkey & DuaKNo",
+
+	WelcomeSoundId = 0,
+
+	AimAssistRadius = 1.2,
+	AimAssistRadiusTouch = 2.5,
+	RagdollTime = 3.5,
+
+	ShoulderOffset = Vector3.new(1.9, 0.5, 0),
+
+	GunAssetId = 732463129,
+	ModelFolderName = "GravityGunModel",
+	ModelLength = 4.3,
+	ModelWaitSeconds = 2,
+	NpcUserId = 0,
+}
+
+if next(CONFIG.AdminUserIds) ~= nil and not CONFIG.AdminUserIds[player.UserId] then
+	return
+end
+
+shared.GG_RUN = (shared.GG_RUN or 0) + 1
+pcall(function()
+	RunService:UnbindFromRenderStep("GravityGunZoom")
+end)
+pcall(function()
+	local pg = player:WaitForChild("PlayerGui", 10)
+	for _, n in ipairs({ "GravityGunUI", "GravityGunButtons", "GravityTag" }) do
+		local o = pg and pg:FindFirstChild(n)
+		if o then
+			o:Destroy()
+		end
+	end
+	for _, n in ipairs({ "GravityHolder", "GravityGunNPCs", "GravityGunPortals" }) do
+		local o = Workspace:FindFirstChild(n)
+		if o then
+			o:Destroy()
+		end
+	end
+	local cam = Workspace.CurrentCamera
+	local fx = cam and cam:FindFirstChild("GravityGunFx")
+	if fx then
+		fx:Destroy()
+	end
+	for _, holderObj in ipairs({ player:FindFirstChildOfClass("Backpack"), player.Character }) do
+		local old = holderObj and holderObj:FindFirstChild(CONFIG.ToolName)
+		if old and old:IsA("Tool") then
+			old:Destroy()
+		end
+	end
+end)
+
+local DEFAULTS = {
+	NpcDistance = 400,
+	ObjectDistance = 600,
+	ShowArc = true,
+	Range = 300,
+	Snappiness = 45,
+	HoldDefault = 8,
+	RotSpeed = 3,
+	AutoSpin = false,
+	SpinSpeed = 6,
+	SpinAxis = 1,
+	FollowCamera = true,
+	ThrowSpin = 3,
+	ZeroG = false,
+	ZeroGTime = 4,
+	AimAssist = true,
+	View = 1,
+	LockMouse = true,
+	SpawnCount = 1,
+	NpcType = 1,
+	ImpactRagdoll = true,
+	ImpactChain = true,
+	ImpactDamage = false,
+	ImpactPower = 70,
+	Ragdoll = true,
+	WorldGravity = math.floor(Workspace.Gravity + 0.5),
+	NpcSize = 1,
+	PulseRadius = 35,
+	PulsePower = 160,
+	TwoHanded = true,
+	SwapHands = false,
+	ShoulderCam = true,
+	ModelScale = 1,
+	ModelYaw = 15,
+	ModelPitch = 0,
+	ModelRoll = 0,
+	ModelX = -0.35,
+	ModelY = 0.30,
+	ModelZ = -0.50,
+	HighlightTarget = true,
+	Theme = 1,
+	Crosshair = 1,
+	ShowHUD = true,
+	ShowTags = true,
+}
+local S = table.clone(DEFAULTS)
+
+local AXIS_NAMES = { "Yaw", "Pitch", "Roll", "Tumble" }
+local THROW_NAMES = { "None", "Low", "High", "Chaos" }
+local THROW_SPIN = { 0, 6, 22, 60 }
+local CROSS_NAMES = { "Ring", "Cross", "Dot", "Off" }
+local VIEW_NAMES = { "Normal camera", "Aim mode", "First person" }
+local NPC_TYPES = { "My avatar", "R15 dummy", "R6 dummy" }
+
+local THEMES = {
+	{ name = "Plasma Cyan", color = Color3.fromRGB(60, 210, 255) },
+	{ name = "Deep Cyan", color = Color3.fromRGB(0, 170, 255) },
+	{ name = "Violet", color = Color3.fromRGB(170, 110, 255) },
+	{ name = "Toxic Lime", color = Color3.fromRGB(150, 255, 70) },
+	{ name = "Crimson", color = Color3.fromRGB(255, 70, 80) },
+	{ name = "Hot Pink", color = Color3.fromRGB(255, 90, 190) },
+	{ name = "Ice White", color = Color3.fromRGB(225, 240, 255) },
+	{ name = "Rainbow", color = Color3.fromRGB(60, 210, 255), rainbow = true },
+}
+local THEME_NAMES = {}
+for i, th in ipairs(THEMES) do
+	THEME_NAMES[i] = th.name
+end
+
+local SOUNDS = {
+	Equip = { id = 124704595914789, vol = 0.8 },
+	Grab = { id = 102568033872947, vol = 0.8 },
+	Drop = { id = 102568033872947, vol = 0.55, speed = 0.82 },
+	Punt = { id = 135978182548492, vol = 0.9 },
+	Fire = { id = 79905223788454, vol = 0.8 },
+	Deny = { id = 79905223788454, vol = 0.3, speed = 0.55 },
+}
+
+local equipped = false
+local holding, pulling = nil, nil
+local pullStart = 0
+local holdDist = S.HoldDefault
+local holdInstances = {}
+local holdAP, holdAO
+local currentAim = nil
+local npcCache = setmetatable({}, { __mode = "k" })
+
+local baseFov, targetFov, curFov = 70, 70, 70
+local savedSens = 1
+
+local panelOpen = false
+local mobileRot = 0
+local equipAlpha, open, recoil, flash = 0, 0, 0, 0
+local swayX, swayY = 0, 0
+local lastCamCF = camera.CFrame
+local aimTimer, hudTimer = 0, 0
+local ST = { fovKick = 0 }
+
+local isTouch = UserInputService.TouchEnabled
+	and not UserInputService.KeyboardEnabled
+	and not UserInputService.MouseEnabled
+
+local findTarget, freezeTarget, grabToggle, punt, toast
+local setPanel, resetRotation, toggleSpin, cycleSpinAxis, changeDist, zoomBy, applyCrosshair, applyHudVisibility
+local toggleView, applyView, adjustFling
+
+local claimTokens = setmetatable({}, { __mode = "k" })
+local ownershipRemote = ReplicatedStorage:FindFirstChild("GravityGunOwnership")
+if not ownershipRemote then
+	task.spawn(function()
+		ownershipRemote = ReplicatedStorage:WaitForChild("GravityGunOwnership", 8)
+	end)
+end
+local function claim(t, on)
+	if not ownershipRemote or not t or not t.root then
+		return
+	end
+	local root = t.root
+	claimTokens[root] = (claimTokens[root] or 0) + 1
+	local tok = claimTokens[root]
+	if on then
+		ownershipRemote:FireServer(root, true)
+	else
+		task.delay(CONFIG.OwnershipReleaseDelay, function()
+			if claimTokens[root] == tok and ownershipRemote then
+				ownershipRemote:FireServer(root, false)
+			end
+		end)
+	end
+end
+
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+local soundProtos = {}
+for name, spec in pairs(SOUNDS) do
+	local s = Instance.new("Sound")
+	s.Name = "GG_" .. name
+	s.SoundId = "rbxassetid://" .. spec.id
+	s.Volume = spec.vol or 0.7
+	s.PlaybackSpeed = spec.speed or 1
+	s.Parent = SoundService
+	soundProtos[name] = s
+end
+task.spawn(function()
+	pcall(function()
+		local list = {}
+		for _, s in pairs(soundProtos) do
+			table.insert(list, s)
+		end
+		ContentProvider:PreloadAsync(list)
+	end)
+end)
+
+local function playSound(name)
+	local proto = soundProtos[name]
+	if not proto then
+		return
+	end
+	local s = proto:Clone()
+	s.Parent = SoundService
+	s:Play()
+	Debris:AddItem(s, 6)
+end
+
+local function new(class, props, parent)
+	local i = Instance.new(class)
+	for k, v in pairs(props) do
+		i[k] = v
+	end
+	i.Parent = parent
+	return i
+end
+
+local function corner(inst, scale, offset)
+	return new("UICorner", { CornerRadius = UDim.new(scale or 0, offset or 0) }, inst)
+end
+
+local accent = THEMES[1].color
+local accentBinds = {}
+local optionRefreshers = {}
+local function bindAccent(inst, prop, darken)
+	table.insert(accentBinds, { inst, prop, darken or 0 })
+end
+
+local beamAtt = Instance.new("Attachment")
+beamAtt.Name = "GravityBeamTarget"
+local beam1, beam2, muzzleAtt, muzzleLight
+
+local fxFolder = Instance.new("Folder")
+fxFolder.Name = "GravityGunFx"
+fxFolder.Parent = camera
+local CYL = Enum.PartType.Cylinder
+local function mkPart(name, size, color, material, shape)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.Color = color
+	p.Material = material
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Massless = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	if shape then
+		p.Shape = shape
+	end
+	p.Parent = fxFolder
+	return p
+end
+
+local PG = {
+	protos = nil,
+	grip = CFrame.new(0.130999982, -0.453000009, -0.600000203, 0.994702816, 0.000173716733, 0.102792479, 0.102792479, 1.794735e-05, -0.994702816, -0.000174641376, 1, -4.49320181e-09),
+	tip = Vector3.new(0, 0, -1.2),
+	fit = 1,
+	failed = false,
+	live = nil,
+	dirty = true,
+	recoilWas = false,
+}
+
+PG.beamHolder = mkPart("BeamEnd", Vector3.one * 0.2, Color3.new(1, 1, 1), Enum.Material.SmoothPlastic)
+PG.beamHolder.Transparency = 1
+function PG.updateBeam()
+	local part = PG.beamPart
+	if not part then
+		return
+	end
+	if not part.Parent then
+		PG.beamPart = nil
+		return
+	end
+	local pos = part.Position
+	local m = part:FindFirstAncestorOfClass("Model")
+	if m and m ~= Workspace and m:FindFirstChildOfClass("Humanoid") then
+		local ok, cf = pcall(m.GetBoundingBox, m)
+		if ok and cf then
+			pos = cf.Position
+		end
+	end
+	PG.beamHolder.CFrame = CFrame.new(pos)
+end
+
+local function makeBeam(handle, w0, w1, segments)
+	local b = Instance.new("Beam")
+	b.Attachment0 = muzzleAtt
+	b.LightEmission = 1
+	b.LightInfluence = 0
+	b.FaceCamera = true
+	b.Width0 = w0
+	b.Width1 = w1
+	b.Segments = segments
+	b.Transparency = NumberSequence.new(0.15)
+	b.Enabled = false
+	b.Parent = handle
+	return b
+end
+
+local BEAM_CYAN = Color3.fromRGB(0, 225, 255)
+local function paintFx()
+	local c = BEAM_CYAN
+	local light = c:Lerp(Color3.new(1, 1, 1), 0.7)
+	if beam1 then
+		beam1.Color = ColorSequence.new(c, light)
+	end
+	if beam2 then
+		beam2.Color = ColorSequence.new(light, c)
+	end
+	if PG.beam3 then
+		PG.beam3.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+			ColorSequenceKeypoint.new(0.5, light),
+			ColorSequenceKeypoint.new(1, c),
+		})
+	end
+	if muzzleLight then
+		muzzleLight.Color = c
+	end
+end
+
+local function boxExtents(list)
+	local mnx, mny, mnz = math.huge, math.huge, math.huge
+	local mxx, mxy, mxz = -math.huge, -math.huge, -math.huge
+	for _, e in ipairs(list) do
+		local h = e.size / 2
+		for sx = -1, 1, 2 do
+			for sy = -1, 1, 2 do
+				for sz = -1, 1, 2 do
+					local p = e.cf:PointToWorldSpace(Vector3.new(h.X * sx, h.Y * sy, h.Z * sz))
+					mnx, mny, mnz = math.min(mnx, p.X), math.min(mny, p.Y), math.min(mnz, p.Z)
+					mxx, mxy, mxz = math.max(mxx, p.X), math.max(mxy, p.Y), math.max(mxz, p.Z)
+				end
+			end
+		end
+	end
+	return Vector3.new(mnx, mny, mnz), Vector3.new(mxx, mxy, mxz)
+end
+
+local function isJunk(d)
+	return d:IsA("LuaSourceContainer")
+		or d:IsA("Sound")
+		or d:IsA("Humanoid")
+		or d:IsA("ForceField")
+		or d:IsA("JointInstance")
+		or d:IsA("WeldConstraint")
+		or d:IsA("Constraint")
+		or d:IsA("TouchTransmitter")
+		or d:IsA("Fire")
+		or d:IsA("Smoke")
+end
+
+local function buildProtos(fetched)
+
+	local function pick(root)
+		local tools = {}
+		if root:IsA("Tool") then
+			table.insert(tools, root)
+		end
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("Tool") then
+				table.insert(tools, d)
+			end
+		end
+		for _, tl in ipairs(tools) do
+			local n = tl.Name:lower()
+			if n:find("gravity", 1, true) or n:find("gmod", 1, true) or n:find("phys", 1, true) then
+				return tl
+			end
+		end
+		for _, tl in ipairs(tools) do
+			if not tl.Name:lower():find("portal", 1, true) then
+				return tl
+			end
+		end
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("Model") then
+				local n = d.Name:lower()
+				if n:find("gravity", 1, true) or n:find("gmod", 1, true) then
+					return d
+				end
+			end
+		end
+		return tools[1] or root
+	end
+	local toolSrc = pick(fetched)
+	local work = Instance.new("Model")
+	if toolSrc:IsA("BasePart") then
+		toolSrc:Clone().Parent = work
+	else
+		for _, c in ipairs(toolSrc:GetChildren()) do
+			c:Clone().Parent = work
+		end
+	end
+	for _, d in ipairs(work:GetDescendants()) do
+		if isJunk(d) then
+			d:Destroy()
+		end
+	end
+	local parts = {}
+	for _, d in ipairs(work:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(parts, d)
+		end
+	end
+	if #parts == 0 then
+		work:Destroy()
+		return false
+	end
+
+	local ref = work:FindFirstChild("Handle", true)
+	if ref and not ref:IsA("BasePart") then
+		ref = nil
+	end
+	local base, rot = nil, CFrame.new()
+	if ref then
+		base = ref.CFrame
+	else
+		local boxes = {}
+		for _, p in ipairs(parts) do
+			table.insert(boxes, { cf = p.CFrame, size = p.Size })
+		end
+		local mn, mx = boxExtents(boxes)
+		local size = mx - mn
+		base = CFrame.new((mn + mx) / 2)
+
+		if size.X >= size.Y and size.X >= size.Z then
+			rot = CFrame.Angles(0, math.rad(90), 0)
+		elseif size.Y >= size.Z then
+			rot = CFrame.Angles(math.rad(-90), 0, 0)
+		end
+	end
+	local inv = base:Inverse()
+	local rels, boxes = {}, {}
+	for i, p in ipairs(parts) do
+		rels[i] = rot * (inv * p.CFrame)
+		boxes[i] = { cf = rels[i], size = p.Size }
+	end
+	local mn, mx = boxExtents(boxes)
+	local size = mx - mn
+	local longest = math.max(size.X, size.Y, size.Z)
+	if longest < 0.01 then
+		work:Destroy()
+		return false
+	end
+
+	local protos = {}
+	for i, p in ipairs(parts) do
+		local c = p:Clone()
+		for _, d in ipairs(c:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d:Destroy()
+			end
+		end
+		c.Name = "Gun_" .. p.Name
+		c.Anchored = false
+		c.CanCollide = false
+		c.CanQuery = false
+		c.CanTouch = false
+		c.Massless = true
+		c.CastShadow = false
+		protos[i] = { part = c, rel = rels[i], size = p.Size }
+	end
+	PG.protos = protos
+	PG.fit = CONFIG.ModelLength / longest
+	PG.tip = Vector3.new((mn.X + mx.X) / 2, (mn.Y + mx.Y) / 2, mn.Z)
+
+	PG.gripSrc = (toolSrc:IsA("Tool") and ref) and toolSrc.Grip or nil
+	print("[GravityGun] using '" .. toolSrc.Name .. "' from the asset")
+	work:Destroy()
+	return true
+end
+
+local function usePlaceholder()
+	local function box(name, size, color, rel)
+		local p = Instance.new("Part")
+		p.Name = "Gun_" .. name
+		p.Size = size
+		p.Color = color
+		p.Material = Enum.Material.SmoothPlastic
+		p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = false, false, false, false, false
+		p.Massless = true
+		return { part = p, rel = rel, size = size }
+	end
+	PG.protos = {
+		box("Body", Vector3.new(0.5, 0.6, 1.7), Color3.fromRGB(205, 208, 214), CFrame.new(0, 0, 0)),
+		box("Barrel", Vector3.new(0.3, 0.3, 0.7), Color3.fromRGB(60, 62, 68), CFrame.new(0, 0, -1.15)),
+		box("Grip", Vector3.new(0.3, 0.7, 0.35), Color3.fromRGB(50, 50, 54), CFrame.new(0, -0.55, 0.45)),
+	}
+	PG.fit = 1
+	PG.gripSrc = nil
+	PG.tip = Vector3.new(0, 0, -1.5)
+end
+
+local function fetchSource()
+	local manual = ReplicatedStorage:FindFirstChild(CONFIG.ModelFolderName)
+	if manual then
+		return manual, "ReplicatedStorage"
+	end
+	local ok, res = pcall(function()
+		return game:GetObjects("rbxassetid://" .. CONFIG.GunAssetId)
+	end)
+	if ok and type(res) == "table" and res[1] then
+		return res[1], "GetObjects"
+	end
+	ok, res = pcall(function()
+		return game:GetService("InsertService"):LoadAsset(CONFIG.GunAssetId)
+	end)
+	if ok and res then
+		return res, "InsertService"
+	end
+	manual = ReplicatedStorage:WaitForChild(CONFIG.ModelFolderName, CONFIG.ModelWaitSeconds)
+	if manual then
+		return manual, "ReplicatedStorage"
+	end
+	return nil
+end
+
+function PG.applyGrip(live)
+	local g = PG.gripSrc
+	if g then
+		local k = PG.fit * S.ModelScale
+		live.tool.Grip = CFrame.new(g.Position * k) * g.Rotation
+	else
+		live.tool.Grip = PG.grip
+	end
+end
+
+function PG.attach(live)
+	if not PG.protos or live.attached then
+		return
+	end
+	live.attached = true
+	for _, e in ipairs(PG.protos) do
+		local part = e.part:Clone()
+		local weld = Instance.new("Weld")
+		weld.Part0 = live.handle
+		weld.Part1 = part
+		weld.C0 = e.rel
+		weld.Parent = live.handle
+		part.Parent = live.tool
+		table.insert(live.entries, { part = part, weld = weld, rel = e.rel, size = e.size })
+	end
+	PG.applyGrip(live)
+	live.k = nil
+	PG.dirty = true
+end
+
+function PG.pose(push)
+	local live = PG.live
+	if not live or not live.attached then
+		return
+	end
+	local k = PG.fit * S.ModelScale
+	local adj = CFrame.new(S.ModelX, S.ModelY, S.ModelZ + (push or 0))
+		* CFrame.Angles(math.rad(S.ModelPitch), math.rad(S.ModelYaw), math.rad(S.ModelRoll))
+	local resize = live.k ~= k
+	live.k = k
+	if resize then
+		PG.applyGrip(live)
+	end
+	for _, e in ipairs(live.entries) do
+		if resize then
+			e.part.Size = e.size * k
+		end
+		e.weld.C0 = adj * (CFrame.new(e.rel.Position * k) * e.rel.Rotation)
+	end
+	if muzzleAtt then
+		muzzleAtt.CFrame = adj * CFrame.new(PG.tip * k)
+	end
+end
+
+function PG.build(tool)
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.4, 0.4, 0.4)
+	handle.Transparency = 1
+	handle.CanCollide, handle.CanQuery, handle.CanTouch = false, false, false
+	handle.CastShadow = false
+	handle.Massless = true
+	handle.Parent = tool
+	local live = { tool = tool, handle = handle, entries = {}, k = nil, attached = false }
+	PG.live = live
+
+	muzzleAtt = Instance.new("Attachment")
+	muzzleAtt.Name = "Muzzle"
+	muzzleAtt.CFrame = CFrame.new(PG.tip * (PG.fit * S.ModelScale))
+	muzzleAtt.Parent = handle
+	muzzleLight = Instance.new("PointLight")
+	muzzleLight.Range = 9
+	muzzleLight.Brightness = 0.6
+	muzzleLight.Enabled = false
+	muzzleLight.Parent = muzzleAtt
+	beam1 = makeBeam(handle, 0.18, 0.55, 28)
+	beam2 = makeBeam(handle, 0.08, 0.2, 28)
+
+	local b3 = makeBeam(handle, 0.25, 0.5, 40)
+	b3.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	b3.TextureMode = Enum.TextureMode.Wrap
+	b3.TextureLength = 1.5
+	b3.TextureSpeed = -4
+	b3.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(0.5, 0.25),
+		NumberSequenceKeypoint.new(1, 0.1),
+	})
+	PG.beam3 = b3
+	paintFx()
+
+	PG.attach(live)
+end
+
+task.spawn(function()
+	local fetched, how = fetchSource()
+	local ok = false
+	if fetched then
+		local good, res = pcall(buildProtos, fetched)
+		ok = good and res == true
+		if how ~= "ReplicatedStorage" then
+			pcall(function()
+				fetched:Destroy()
+			end)
+		end
+	end
+	if ok then
+		print(string.format("[GravityGun] Gravity gun cloned (%s, %d parts)", how, #PG.protos))
+	else
+		PG.failed = true
+		usePlaceholder()
+		warn("[GravityGun] Couldn't load Gravity Gun asset " .. tostring(CONFIG.GunAssetId) .. ". Insert it in Studio, rename it '" .. CONFIG.ModelFolderName .. "' and put it in ReplicatedStorage. Using a plain placeholder for now.")
+	end
+	local live = PG.live
+	if live and live.tool and live.tool:IsDescendantOf(game) then
+		pcall(PG.attach, live)
+	end
+end)
+
+local highlight = Instance.new("Highlight")
+highlight.FillTransparency = 0.85
+highlight.OutlineTransparency = 0.1
+highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+highlight.Parent = camera
+bindAccent(highlight, "FillColor")
+bindAccent(highlight, "OutlineColor")
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	fxFolder.Parent = camera
+	highlight.Parent = camera
+end)
+
+local holder = Instance.new("Part")
+holder.Name = "GravityHolder"
+holder.Anchored = true
+holder.CanCollide = false
+holder.CanQuery = false
+holder.CanTouch = false
+holder.Transparency = 1
+holder.Size = Vector3.one
+holder.Parent = Workspace
+local holderAtt = Instance.new("Attachment")
+holderAtt.Parent = holder
+
+local function setAccent(c, fast)
+	accent = c
+	for _, b in ipairs(accentBinds) do
+		local inst = b[1]
+		if inst.Parent then
+			inst[b[2]] = b[3] > 0 and c:Lerp(Color3.new(0, 0, 0), b[3]) or c
+		end
+	end
+	paintFx()
+	if not fast then
+		for _, f in ipairs(optionRefreshers) do
+			f()
+		end
+	end
+end
+
+local WHITE = Color3.new(1, 1, 1)
+local PANEL_BG = Color3.fromRGB(22, 22, 24)
+local DIM = Color3.fromRGB(188, 188, 193)
+local EDGE = Color3.fromRGB(66, 66, 70)
+
+local gui = new("ScreenGui", {
+	Name = "GravityGunUI",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 50,
+}, player:WaitForChild("PlayerGui"))
+
+local btnGui = new("ScreenGui", { Name = "GravityGunButtons", ResetOnSpawn = false, DisplayOrder = 52 }, player.PlayerGui)
+pcall(function()
+	btnGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+end)
+
+local cross = new("Frame", {
+	Name = "Crosshair",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(80, 80),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+
+local crossRing = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(34, 34),
+	BackgroundTransparency = 1,
+}, cross)
+corner(crossRing, 1)
+local ringStroke = new("UIStroke", { Thickness = 2, Transparency = 0.35, Color = WHITE }, crossRing)
+
+local crossDot = new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(5, 5),
+	BackgroundColor3 = WHITE,
+	BorderSizePixel = 0,
+}, cross)
+corner(crossDot, 1)
+
+local ticks = {}
+local tickDefs = { { 0, -1, 2, 9 }, { 0, 1, 2, 9 }, { -1, 0, 9, 2 }, { 1, 0, 9, 2 } }
+for i, d in ipairs(tickDefs) do
+	ticks[i] = {
+		frame = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(d[3], d[4]),
+			BackgroundColor3 = WHITE,
+			BorderSizePixel = 0,
+		}, cross),
+		dx = d[1],
+		dy = d[2],
+	}
+end
+local crossSpread, crossLock, crossSpin = 24, 0, 0
+
+function applyCrosshair()
+	local style = S.Crosshair
+	crossRing.Visible = style == 1
+	for _, tk in ipairs(ticks) do
+		tk.frame.Visible = style == 1 or style == 2
+	end
+	crossDot.Visible = style ~= 4
+end
+
+local function setCrossColor(c)
+	ringStroke.Color = c
+	crossDot.BackgroundColor3 = c
+	for _, tk in ipairs(ticks) do
+		tk.frame.BackgroundColor3 = c
+	end
+end
+
+local toastLabel = new("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.62),
+	Size = UDim2.fromOffset(0, 30),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundColor3 = PANEL_BG,
+	BackgroundTransparency = 0.2,
+	TextColor3 = Color3.fromRGB(190, 235, 255),
+	Font = Enum.Font.BuilderSansBold,
+	TextSize = 15,
+	Visible = false,
+}, gui)
+corner(toastLabel, 0, 4)
+new("UIPadding", { PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14) }, toastLabel)
+new("UIStroke", { Color = EDGE, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, toastLabel)
+local toastToken = 0
+function toast(msg, good)
+	toastToken += 1
+	local tok = toastToken
+	toastLabel.Text = msg
+	toastLabel.TextColor3 = good and accent or Color3.fromRGB(190, 235, 255)
+	toastLabel.Visible = true
+	task.delay(1.8, function()
+		if toastToken == tok then
+			toastLabel.Visible = false
+		end
+	end)
+end
+
+local UI = { rows = {} }
+do
+	local hud = new("Frame", {
+		Name = "HUD",
+		Position = UDim2.fromOffset(14, 64),
+		Size = UDim2.fromOffset(250, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = PANEL_BG,
+		BackgroundTransparency = 0.08,
+		Visible = false,
+	}, gui)
+	UI.hud = hud
+	corner(hud, 0, 5)
+	new("UIStroke", { Thickness = 1, Color = EDGE }, hud)
+	new("UIPadding", {
+		PaddingLeft = UDim.new(0, 12),
+		PaddingRight = UDim.new(0, 12),
+		PaddingTop = UDim.new(0, 10),
+		PaddingBottom = UDim.new(0, 12),
+	}, hud)
+	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, hud)
+	if isTouch then
+		new("UIScale", { Scale = 0.75 }, hud)
+	end
+
+	local titleRow = new("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, LayoutOrder = 1 }, hud)
+	new("TextLabel", {
+		Size = UDim2.new(0.6, 0, 1, 0),
+		BackgroundTransparency = 1,
+		Text = "Gravity Gun",
+		TextColor3 = WHITE,
+		Font = Enum.Font.BuilderSansBold,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, titleRow)
+	UI.status = new("TextLabel", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.fromScale(1, 0.5),
+		Size = UDim2.fromOffset(84, 22),
+		BackgroundTransparency = 1,
+		Text = "Ready",
+		TextColor3 = DIM,
+		Font = Enum.Font.BuilderSansMedium,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Right,
+	}, titleRow)
+
+	new("Frame", { Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = EDGE, BorderSizePixel = 0, LayoutOrder = 2 }, hud)
+
+	local function row(label, key, order)
+		local f = new("Frame", { Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, LayoutOrder = order }, hud)
+		new("TextLabel", {
+			Size = UDim2.new(0.4, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Text = label,
+			TextColor3 = DIM,
+			Font = Enum.Font.BuilderSansMedium,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, f)
+		UI.rows[key] = new("TextLabel", {
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.fromScale(1, 0),
+			Size = UDim2.new(0.6, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Text = "-",
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansBold,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}, f)
+	end
+
+	row("Target", "target", 3)
+	row("Mass", "mass", 4)
+	row("Distance", "dist", 5)
+	row("Hold", "hold", 6)
+	local track = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 5),
+		BackgroundColor3 = Color3.fromRGB(58, 58, 62),
+		BorderSizePixel = 0,
+		LayoutOrder = 7,
+	}, hud)
+	UI.holdFill = new("Frame", { Size = UDim2.fromScale(0, 1), BorderSizePixel = 0 }, track)
+	bindAccent(UI.holdFill, "BackgroundColor3")
+	row("NPC fling", "npc", 8)
+	row("Item fling", "obj", 9)
+end
+
+function applyHudVisibility()
+	UI.hud.Visible = equipped and S.ShowHUD
+end
+
+local tag = new("BillboardGui", {
+	Name = "GravityTag",
+	Size = UDim2.fromOffset(180, 42),
+	AlwaysOnTop = true,
+	LightInfluence = 0,
+	ExtentsOffsetWorldSpace = Vector3.new(0, 1.2, 0),
+	Enabled = false,
+}, player.PlayerGui)
+local tagBg = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = PANEL_BG, BackgroundTransparency = 0.2 }, tag)
+corner(tagBg, 0, 4)
+new("UIStroke", { Thickness = 1, Color = EDGE }, tagBg)
+local tagName = new("TextLabel", {
+	Position = UDim2.fromOffset(0, 3),
+	Size = UDim2.new(1, 0, 0, 20),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.BuilderSansBold,
+	TextSize = 14,
+	Text = "",
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, tagBg)
+bindAccent(tagName, "TextColor3")
+local tagInfo = new("TextLabel", {
+	Position = UDim2.fromOffset(0, 22),
+	Size = UDim2.new(1, 0, 0, 16),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.BuilderSansMedium,
+	TextSize = 11,
+	TextColor3 = DIM,
+	Text = "",
+}, tagBg)
+
+local mobileButtons, extraButtons = {}, {}
+local moreOpen = false
+local function makeButton(text, size, anchor, pos, onTap, textSize, isExtra)
+	local b = new("TextButton", {
+		Size = UDim2.fromOffset(size, size),
+		AnchorPoint = anchor,
+		Position = pos,
+		BackgroundColor3 = Color3.fromRGB(34, 34, 37),
+		BackgroundTransparency = 0.12,
+		Text = text,
+		TextColor3 = WHITE,
+		Font = Enum.Font.BuilderSansMedium,
+		TextSize = textSize or (size > 70 and 17 or 13),
+		AutoButtonColor = true,
+		Visible = false,
+	}, btnGui)
+	corner(b, 0, 7)
+	new("UIStroke", { Thickness = 1, Color = EDGE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+	if onTap then
+		b.Activated:Connect(onTap)
+	end
+	table.insert(isExtra and extraButtons or mobileButtons, b)
+	return b
+end
+
+function UI.setButtons(visible)
+	for _, b in ipairs(mobileButtons) do
+		b.Visible = visible
+	end
+	for _, b in ipairs(extraButtons) do
+		b.Visible = visible and moreOpen
+	end
+end
+
+local grabBtn
+if isTouch then
+	local BR, TL = Vector2.new(1, 1), Vector2.new(0, 0)
+
+	makeButton("Launch", 84, BR, UDim2.new(1, -16, 1, -150), function() punt() end)
+	grabBtn = makeButton("Grab", 76, BR, UDim2.new(1, -112, 1, -118), function() grabToggle() end)
+	makeButton("-", 40, BR, UDim2.new(1, -62, 1, -246), function() changeDist(-2) end, 24)
+	makeButton("+", 40, BR, UDim2.new(1, -16, 1, -246), function() changeDist(2) end, 24)
+
+	local bar = new("Frame", {
+		Name = "TopRightBar",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 10),
+		Size = UDim2.fromOffset(0, 44),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+	}, btnGui)
+	new("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, bar)
+	local function barButton(order, ...)
+		local b = makeButton(...)
+		b.LayoutOrder = order
+		b.Parent = bar
+		return b
+	end
+	barButton(1, "Menu", 44, TL, UDim2.new(), function() setPanel(not panelOpen) end, 12)
+	barButton(2, "View", 44, TL, UDim2.new(), function() toggleView() end, 12)
+	barButton(3, "NPC -", 44, TL, UDim2.new(), function() adjustFling(-1) end, 11)
+	barButton(4, "NPC +", 44, TL, UDim2.new(), function() adjustFling(1) end, 11)
+	barButton(5, "More", 44, TL, UDim2.new(), function()
+		moreOpen = not moreOpen
+		UI.setButtons(equipped)
+	end, 11)
+
+	local extrasGrid = new("Frame", {
+		Name = "ExtraButtons",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 64),
+		Size = UDim2.fromOffset(5 * 40 + 4 * 8, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+	}, btnGui)
+	new("UIGridLayout", {
+		CellSize = UDim2.fromOffset(40, 40),
+		CellPadding = UDim2.fromOffset(8, 8),
+		FillDirection = Enum.FillDirection.Horizontal,
+		FillDirectionMaxCells = 5,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, extrasGrid)
+	local extraOrder = 0
+	local function extra(text, fn, ts)
+		local b = makeButton(text, 40, TL, UDim2.new(), fn, ts or 11, true)
+		extraOrder += 1
+		b.LayoutOrder = extraOrder
+		b.Parent = extrasGrid
+		return b
+	end
+	local rl = extra("<", nil, 20)
+	local rr = extra(">", nil, 20)
+	for b, dir in pairs({ [rl] = -1, [rr] = 1 }) do
+		b.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+				mobileRot = dir
+			end
+		end)
+	end
+	extra("Axis", function() cycleSpinAxis() end)
+	extra("Spin", function() toggleSpin() end)
+	extra("Reset", function() resetRotation() end)
+	extra("Freeze", function() ST.freezeAim() end)
+	extra("Z +", function() zoomBy(2) end, 14)
+	extra("Z -", function() zoomBy(-2) end, 14)
+	extra("Spawn", function() ST.spawn() end)
+	extra("Blast", function() ST.pulse() end)
+end
+
+local hint
+if UserInputService.KeyboardEnabled then
+	hint = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -92),
+		Size = UDim2.fromOffset(0, 28),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = PANEL_BG,
+		BackgroundTransparency = 0.2,
+		TextColor3 = WHITE,
+		Font = Enum.Font.BuilderSansMedium,
+		TextSize = 14,
+		Text = "LMB launch     RMB / F grab     H shockwave     P spawn NPC     [ ] NPC distance     C camera     O menu",
+		Visible = false,
+	}, gui)
+	corner(hint, 0, 4)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, hint)
+end
+
+do
+	local BG = Color3.fromRGB(28, 28, 30)
+	local ROW_BG = Color3.fromRGB(38, 38, 41)
+	local BTN = Color3.fromRGB(50, 50, 54)
+	local TAB_ON = Color3.fromRGB(88, 88, 94)
+	local TRACK = Color3.fromRGB(68, 68, 72)
+
+	local panel = new("Frame", {
+		Name = "Options",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(0.92, 0.9),
+		BackgroundColor3 = BG,
+		Active = true,
+		Visible = false,
+	}, gui)
+	new("UISizeConstraint", { MaxSize = Vector2.new(480, 600), MinSize = Vector2.new(280, 240) }, panel)
+	corner(panel, 0, 6)
+	new("UIStroke", { Thickness = 1, Color = EDGE }, panel)
+
+	new("TextLabel", {
+		Position = UDim2.fromOffset(18, 0),
+		Size = UDim2.new(1, -110, 0, 52),
+		BackgroundTransparency = 1,
+		Text = "Options",
+		TextColor3 = WHITE,
+		Font = Enum.Font.BuilderSansBold,
+		TextSize = 21,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, panel)
+	local closeBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -12, 0, 8),
+		Size = UDim2.fromOffset(78, 36),
+		BackgroundColor3 = BTN,
+		Text = "Close",
+		TextColor3 = WHITE,
+		Font = Enum.Font.BuilderSansBold,
+		TextSize = 14,
+		Modal = true,
+	}, panel)
+	corner(closeBtn, 0, 4)
+	closeBtn.Activated:Connect(function()
+		setPanel(false)
+	end)
+
+	local tabBar = new("Frame", {
+		Position = UDim2.fromOffset(12, 56),
+		Size = UDim2.new(1, -24, 0, 40),
+		BackgroundTransparency = 1,
+	}, panel)
+
+	local tabs, tabBtns, cur = {}, {}, nil
+	local sliderDrag, dragScroll
+	local selectTab
+	local order = 0
+	local function nextOrder()
+		order += 1
+		return order
+	end
+	local function refreshAll()
+		for _, f in ipairs(optionRefreshers) do
+			f()
+		end
+	end
+
+	local TAB_NAMES = { "Fling", "Gun", "Look", "Spawn", "More" }
+	for i, name in ipairs(TAB_NAMES) do
+		local sc = new("ScrollingFrame", {
+			Position = UDim2.fromOffset(0, 104),
+			Size = UDim2.new(1, 0, 1, -110),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 6,
+			ScrollBarImageColor3 = Color3.fromRGB(205, 210, 225),
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+			Visible = false,
+		}, panel)
+		new("UIPadding", {
+			PaddingLeft = UDim.new(0, 14),
+			PaddingRight = UDim.new(0, 16),
+			PaddingTop = UDim.new(0, 2),
+			PaddingBottom = UDim.new(0, 12),
+		}, sc)
+		new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, sc)
+		tabs[i] = sc
+		local b = new("TextButton", {
+			Position = UDim2.new((i - 1) / 5, 0, 0, 0),
+			Size = UDim2.new(0.2, -5, 1, 0),
+			BackgroundColor3 = BTN,
+			Text = name,
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansBold,
+			TextSize = 13,
+		}, tabBar)
+		corner(b, 0, 4)
+		tabBtns[i] = b
+		b.Activated:Connect(function()
+			selectTab(i)
+		end)
+	end
+	function selectTab(i)
+		for k, sc in ipairs(tabs) do
+			sc.Visible = k == i
+			tabBtns[k].BackgroundColor3 = k == i and TAB_ON or BTN
+			tabBtns[k].TextColor3 = k == i and WHITE or DIM
+		end
+	end
+
+	local function onOptionChanged(key)
+		if key == "Theme" then
+			setAccent(THEMES[S.Theme].color)
+		elseif key == "Crosshair" then
+			applyCrosshair()
+		elseif key == "ShowHUD" then
+			applyHudVisibility()
+		elseif key == "View" then
+			applyView()
+		elseif key == "ModelScale" or key == "ModelYaw" or key == "ModelPitch" or key == "ModelRoll"
+			or key == "ModelX" or key == "ModelY" or key == "ModelZ" then
+			PG.dirty = true
+		elseif key == "WorldGravity" then
+			Workspace.Gravity = S.WorldGravity
+		elseif key == "HighlightTarget" and not S.HighlightTarget then
+			highlight.Adornee = nil
+		end
+	end
+
+	local function newRow(h)
+		local r = new("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = ROW_BG, LayoutOrder = nextOrder() }, cur)
+		corner(r, 0, 4)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, r)
+		return r
+	end
+
+	local function rowText(row, text, w, h, y)
+		return new("TextLabel", {
+			Position = UDim2.fromOffset(0, y or 0),
+			Size = UDim2.new(w, 0, 0, h),
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansMedium,
+			TextSize = 17,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+	end
+
+	local function addNote(text)
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = Color3.fromRGB(205, 210, 222),
+			Font = Enum.Font.BuilderSans,
+			TextSize = 14,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = nextOrder(),
+		}, cur)
+	end
+
+	local function addSlider(spec)
+		local myScroll = cur
+		local row = newRow(66)
+		rowText(row, spec.name, 0.6, 24, 6)
+		local valL = new("TextLabel", {
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, 0, 0, 6),
+			Size = UDim2.fromOffset(112, 24),
+			BackgroundTransparency = 1,
+			TextColor3 = DIM,
+			Font = Enum.Font.BuilderSansMedium,
+			TextSize = 15,
+			TextXAlignment = Enum.TextXAlignment.Right,
+		}, row)
+		local track = new("Frame", {
+			Position = UDim2.fromOffset(0, 46),
+			Size = UDim2.new(1, 0, 0, 4),
+			BackgroundColor3 = TRACK,
+			BorderSizePixel = 0,
+		}, row)
+		local fill = new("Frame", { Size = UDim2.fromScale(0, 1), BorderSizePixel = 0 }, track)
+		bindAccent(fill, "BackgroundColor3")
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(9, 22),
+			Position = UDim2.fromScale(0, 0.5),
+			BackgroundColor3 = Color3.fromRGB(232, 232, 232),
+			BorderSizePixel = 0,
+		}, track)
+		corner(knob, 0, 2)
+		local hit = new("TextButton", {
+			Position = UDim2.new(0, -10, 0, 30),
+			Size = UDim2.new(1, 20, 0, 36),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+		}, row)
+		local function refresh()
+			local v = S[spec.key]
+			local a = math.clamp((v - spec.min) / (spec.max - spec.min), 0, 1)
+			fill.Size = UDim2.fromScale(a, 1)
+			knob.Position = UDim2.fromScale(a, 0.5)
+			valL.Text = string.format(spec.fmt or "%d", v)
+		end
+		local function setFromX(x)
+			local a = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
+			local v = spec.min + a * (spec.max - spec.min)
+			v = math.clamp(math.floor(v / spec.step + 0.5) * spec.step, spec.min, spec.max)
+			S[spec.key] = v
+			refresh()
+			onOptionChanged(spec.key)
+		end
+		hit.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				sliderDrag = setFromX
+				dragScroll = myScroll
+				myScroll.ScrollingEnabled = false
+				setFromX(input.Position.X)
+			end
+		end)
+		table.insert(optionRefreshers, refresh)
+		refresh()
+	end
+
+	local function addToggle(spec)
+		local row = newRow(50)
+		local label = rowText(row, spec.name, 0.82, 50)
+		label.TextWrapped = true
+		label.TextSize = 15
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.fromScale(1, 0.5),
+			Size = UDim2.fromOffset(24, 24),
+			Text = "",
+			AutoButtonColor = false,
+		}, row)
+		corner(b, 0, 3)
+		local box = new("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+		local function refresh()
+			local on = S[spec.key]
+			b.BackgroundColor3 = on and accent or Color3.fromRGB(30, 30, 33)
+			box.Color = on and accent or Color3.fromRGB(122, 122, 128)
+		end
+		b.Activated:Connect(function()
+			S[spec.key] = not S[spec.key]
+			refresh()
+			onOptionChanged(spec.key)
+		end)
+		table.insert(optionRefreshers, refresh)
+		refresh()
+	end
+
+	local function addCycle(spec)
+		local row = newRow(50)
+		rowText(row, spec.name, 0.5, 50)
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.fromScale(1, 0.5),
+			Size = UDim2.fromOffset(160, 34),
+			BackgroundColor3 = BTN,
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansBold,
+			TextSize = 15,
+		}, row)
+		corner(b, 0, 4)
+		new("UIStroke", { Thickness = 1, Color = EDGE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+		local function refresh()
+			b.Text = spec.values[S[spec.key]] or "?"
+		end
+		b.Activated:Connect(function()
+			S[spec.key] = S[spec.key] % #spec.values + 1
+			refresh()
+			onOptionChanged(spec.key)
+		end)
+		table.insert(optionRefreshers, refresh)
+		refresh()
+	end
+
+	local function addAction(text, fn)
+		local b = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 46),
+			BackgroundColor3 = BTN,
+			Text = text,
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansBold,
+			TextSize = 16,
+			LayoutOrder = nextOrder(),
+		}, cur)
+		corner(b, 0, 4)
+		new("UIStroke", { Thickness = 1, Color = EDGE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+		b.Activated:Connect(fn)
+	end
+
+	cur = tabs[1]
+	addToggle({ key = "Ragdoll", name = "Ragdoll NPCs (limp when grabbed / thrown)" })
+	do
+		local DISCORD = "https://discord.gg/QUepmCXVN"
+		local btn = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 46),
+			BackgroundColor3 = BTN,
+			Text = "Join our Discord server",
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansBold,
+			TextSize = 16,
+			LayoutOrder = nextOrder(),
+		}, cur)
+		corner(btn, 0, 4)
+		new("UIStroke", { Thickness = 1, Color = EDGE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, btn)
+		local linkRow = newRow(36)
+		local box = new("TextBox", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = DISCORD,
+			TextColor3 = WHITE,
+			Font = Enum.Font.BuilderSansMedium,
+			TextSize = 15,
+			ClearTextOnFocus = false,
+			TextEditable = true,
+			Visible = false,
+		}, linkRow)
+		linkRow.Visible = false
+		box.FocusLost:Connect(function()
+			box.Text = DISCORD
+		end)
+		btn.Activated:Connect(function()
+			local ok = pcall(function()
+				setclipboard(DISCORD)
+			end)
+			if ok then
+				toast("Discord link copied!", true)
+				btn.Text = "Link copied!"
+				task.delay(2, function()
+					btn.Text = "Join our Discord server"
+				end)
+			else
+
+				linkRow.Visible = true
+				box.Visible = true
+				box:CaptureFocus()
+				box.CursorPosition = #DISCORD + 1
+				box.SelectionStart = 1
+				toast("Select the link and press Ctrl+C (hold to copy on mobile)", true)
+			end
+		end)
+	end
+	addNote("How far things fly when you launch them (flat ground, approximate). Quick keys: [ and ] change the NPC distance, hold Shift for objects.")
+	addSlider({ key = "NpcDistance", name = "NPC fling distance", min = CONFIG.MinFling, max = CONFIG.MaxFling, step = 25, fmt = "%d studs" })
+	addSlider({ key = "ObjectDistance", name = "Object fling distance", min = CONFIG.MinFling, max = CONFIG.MaxFling, step = 25, fmt = "%d studs" })
+	addToggle({ key = "ShowArc", name = "Show throw arc" })
+	addCycle({ key = "ThrowSpin", name = "Spin when launched", values = THROW_NAMES })
+	addToggle({ key = "ZeroG", name = "Float after launch" })
+	addSlider({ key = "ZeroGTime", name = "Float time", min = 1, max = 20, step = 1, fmt = "%d s" })
+	addNote("Impacts: a thrown NPC or object that hits another NPC knocks it down too.")
+	addToggle({ key = "ImpactRagdoll", name = "Thrown things ragdoll what they hit" })
+	addToggle({ key = "ImpactChain", name = "Chain reaction (hit NPCs knock others)" })
+	addSlider({ key = "ImpactPower", name = "Impact power", min = 10, max = 200, step = 10, fmt = "%d%%" })
+	addToggle({ key = "ImpactDamage", name = "Impacts hurt NPCs" })
+	addNote("Shockwave (key H or the PULSE button) blasts everything loose around the crosshair point.")
+	addSlider({ key = "PulseRadius", name = "Shockwave radius", min = 10, max = 80, step = 5, fmt = "%d studs" })
+	addSlider({ key = "PulsePower", name = "Shockwave power", min = 40, max = 400, step = 10 })
+
+	cur = tabs[2]
+	addCycle({ key = "View", name = "Camera view", values = VIEW_NAMES })
+	addSlider({ key = "Range", name = "Reach", min = 20, max = 500, step = 5, fmt = "%d studs" })
+	addSlider({ key = "HoldDefault", name = "Hold distance", min = 4, max = 60, step = 1, fmt = "%d studs" })
+	addSlider({ key = "Snappiness", name = "Hold snappiness", min = 8, max = 100, step = 1 })
+	addToggle({ key = "AimAssist", name = "Aim assist" })
+	addToggle({ key = "TwoHanded", name = "Two-handed grip" })
+	addToggle({ key = "SwapHands", name = "Swap hands (left = handle)" })
+	addToggle({ key = "ShoulderCam", name = "Over-shoulder camera" })
+	addToggle({ key = "LockMouse", name = "Lock mouse to crosshair (Normal camera)" })
+	addSlider({ key = "ModelScale", name = "Gun size", min = 0.3, max = 2.5, step = 0.05, fmt = "%.2f" })
+
+	cur = tabs[3]
+	addCycle({ key = "Theme", name = "Color theme", values = THEME_NAMES })
+	addCycle({ key = "Crosshair", name = "Crosshair", values = CROSS_NAMES })
+	addToggle({ key = "ShowHUD", name = "Show HUD" })
+	addToggle({ key = "ShowTags", name = "Show target tag" })
+	addToggle({ key = "HighlightTarget", name = "Highlight target" })
+
+	cur = tabs[4]
+	addNote("Spawns NPCs where your crosshair points. Only you can see them (client-only script). Key: P.")
+	addAction("Spawn NPC at crosshair", function()
+		ST.spawn()
+	end)
+	addSlider({ key = "SpawnCount", name = "How many", min = 1, max = 20, step = 1 })
+	addCycle({ key = "NpcType", name = "NPC type", values = NPC_TYPES })
+	addSlider({ key = "NpcSize", name = "NPC size", min = 0.5, max = 4, step = 0.1, fmt = "%.1f" })
+	addAction("Remove all spawned NPCs", function()
+		ST.clearNpcs()
+	end)
+	addNote("My avatar = copies your own Roblox avatar (falls back to a dummy if it can't load).")
+	addAction("Ragdoll all NPCs", function()
+		ST.ragdollAll()
+	end)
+	addAction("Unfreeze everything", function()
+		ST.unfreezeAll()
+	end)
+
+	cur = tabs[5]
+	addNote("Advanced. You normally don't need anything on this page.")
+	addSlider({ key = "WorldGravity", name = "World gravity (only you)", min = 10, max = 400, step = 10 })
+	addSlider({ key = "RotSpeed", name = "Rotate speed (Q / E)", min = 0.5, max = 10, step = 0.1, fmt = "%.1f" })
+	addToggle({ key = "AutoSpin", name = "Auto spin held object" })
+	addSlider({ key = "SpinSpeed", name = "Spin speed", min = 0.5, max = 40, step = 0.5, fmt = "%.1f" })
+	addCycle({ key = "SpinAxis", name = "Spin axis", values = AXIS_NAMES })
+	addToggle({ key = "FollowCamera", name = "Object turns with view" })
+	addAction("Reset all options", function()
+		for k, v in pairs(DEFAULTS) do
+			S[k] = v
+		end
+		holdDist = S.HoldDefault
+		Workspace.Gravity = S.WorldGravity
+		setAccent(THEMES[S.Theme].color)
+		applyCrosshair()
+		applyHudVisibility()
+		applyView()
+		PG.dirty = true
+		toast("Options reset", true)
+	end)
+
+	selectTab(1)
+	UI.panel = panel
+
+	function setPanel(on)
+		panelOpen = on and equipped
+		panel.Visible = panelOpen
+		closeBtn.Modal = panelOpen
+		if not panelOpen then
+			sliderDrag = nil
+			if dragScroll then
+				dragScroll.ScrollingEnabled = true
+				dragScroll = nil
+			end
+		end
+	end
+
+	UserInputService.InputChanged:Connect(function(input)
+		if sliderDrag and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			sliderDrag(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			sliderDrag = nil
+			if dragScroll then
+				dragScroll.ScrollingEnabled = true
+				dragScroll = nil
+			end
+			mobileRot = 0
+		end
+	end)
+end
+
+setAccent(THEMES[S.Theme].color)
+applyCrosshair()
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function buildFilter(extra)
+	local list = { fxFolder, holder, tag }
+	if player.Character then
+		table.insert(list, player.Character)
+	end
+	if extra then
+		for _, i in ipairs(extra) do
+			table.insert(list, i)
+		end
+	end
+	return list
+end
+
+local function camHeadOffset()
+	local head = player.Character and player.Character:FindFirstChild("Head")
+	return head and (camera.CFrame.Position - head.Position).Magnitude or 0
+end
+
+local function castAim(range)
+	rayParams.FilterDescendantsInstances = buildFilter()
+	local cf = camera.CFrame
+	local off = camHeadOffset()
+	local res = Workspace:Raycast(cf.Position, cf.LookVector * (off + range), rayParams)
+	return res, off
+end
+
+local function collectParts(t)
+	local out = {}
+	if t.model then
+		for _, d in ipairs(t.model:GetDescendants()) do
+			if d:IsA("BasePart") then
+				table.insert(out, d)
+			end
+		end
+	else
+		out = t.root:GetConnectedParts(true)
+	end
+	return out
+end
+
+local function measure(t)
+	local mass, radius = 0, 0.5
+	for _, p in ipairs(t.parts) do
+		mass += p.Mass
+		local r = (p.Position - t.root.Position).Magnitude + p.Size.Magnitude * 0.5
+		radius = math.max(radius, r)
+	end
+	t.mass = mass
+	t.radius = math.clamp(radius, 0.5, CONFIG.MaxRadius)
+end
+
+local frozenStates = setmetatable({}, { __mode = "k" })
+local frozenParts = setmetatable({}, { __mode = "k" })
+
+local function resolveTarget(part)
+	if not part or not part:IsA("BasePart") then
+		return nil
+	end
+	local fr = frozenParts[part]
+	if fr and frozenStates[fr] then
+		return frozenStates[fr].t
+	end
+	local cur = part.Parent
+	while cur and cur ~= Workspace do
+		if cur:IsA("Model") then
+			local hum = cur:FindFirstChildOfClass("Humanoid")
+			if hum then
+				if Players:GetPlayerFromCharacter(cur) then
+					return nil
+				end
+				local t = npcCache[cur]
+				if not t then
+					t = { model = cur, humanoid = hum, isPlayer = Players:GetPlayerFromCharacter(cur) ~= nil }
+					npcCache[cur] = t
+				end
+				t.root = hum.RootPart or cur.PrimaryPart or cur:FindFirstChild("HumanoidRootPart")
+				if not t.root or t.root.Anchored then
+					return nil
+				end
+				t.parts = collectParts(t)
+				measure(t)
+				t.name = "NPC"
+				return t
+			end
+		end
+		cur = cur.Parent
+	end
+	if part.Anchored or part:IsGrounded() then
+		return nil
+	end
+	local t = { root = part.AssemblyRootPart }
+	if not t.root then
+		return nil
+	end
+	t.parts = collectParts(t)
+	t.mass = t.root.AssemblyMass
+	measure(t)
+	t.mass = math.max(t.mass, 0.01)
+	local model = t.root:FindFirstAncestorOfClass("Model")
+	t.name = (model and model ~= Workspace and model.Name) or t.root.Name
+	return t
+end
+
+local function alive(t)
+	return t and t.root and t.root:IsDescendantOf(Workspace) and not t.root.Anchored
+end
+
+function findTarget(range)
+	local res, off = castAim(range)
+	local t = res and resolveTarget(res.Instance)
+	if t then
+		return t, res, off
+	end
+	if S.AimAssist then
+		local radius = isTouch and CONFIG.AimAssistRadiusTouch or CONFIG.AimAssistRadius
+		rayParams.FilterDescendantsInstances = buildFilter()
+		local cf = camera.CFrame
+		local ok, sres = pcall(function()
+			return Workspace:Spherecast(cf.Position, radius, cf.LookVector * (off + range), rayParams)
+		end)
+		if ok and sres then
+			local st = resolveTarget(sres.Instance)
+			if st then
+				return st, sres, off
+			end
+		end
+	end
+	return nil, res, off
+end
+
+local function snapToRest(model, root)
+	local joints = {}
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("JointInstance") and d.Part0 and d.Part1 then
+			if d:IsA("Motor6D") then
+				d.Transform = CFrame.new()
+			end
+			table.insert(joints, d)
+		end
+	end
+	local placed = { [root] = true }
+	local progress = true
+	while progress do
+		progress = false
+		for _, j in ipairs(joints) do
+			local a, b = placed[j.Part0], placed[j.Part1]
+			if a and not b then
+				j.Part1.CFrame = j.Part0.CFrame * j.C0 * j.C1:Inverse()
+				placed[j.Part1] = true
+				progress = true
+			elseif b and not a then
+				j.Part0.CFrame = j.Part1.CFrame * j.C1 * j.C0:Inverse()
+				placed[j.Part0] = true
+				progress = true
+			end
+		end
+	end
+end
+
+local function setRagdoll(t, on)
+	local hum, model = t.humanoid, t.model
+	if not hum or not model or not model.Parent then
+		return
+	end
+	if on and not S.Ragdoll then
+		return
+	end
+	if on then
+		if t.ragdolled then
+			return
+		end
+		t.ragdolled = true
+		t.rag, t.motors = {}, {}
+
+		for _, p in ipairs(collectParts(t)) do
+			if not frozenParts[p] then
+				p.Anchored = false
+			end
+		end
+
+		t.oldNeck, t.oldBreak = hum.RequiresNeck, hum.BreakJointsOnDeath
+		hum.RequiresNeck = false
+		hum.BreakJointsOnDeath = false
+		hum.PlatformStand = true
+		hum:ChangeState(Enum.HumanoidStateType.Physics)
+		for _, d in ipairs(t.isPlayer and {} or model:GetDescendants()) do
+			if d:IsA("Motor6D") and d.Enabled and d.Part0 and d.Part1 and d.Part0 ~= t.root and d.Part1 ~= t.root then
+				local a0 = Instance.new("Attachment")
+				a0.CFrame = d.C0
+				a0.Parent = d.Part0
+				local a1 = Instance.new("Attachment")
+				a1.CFrame = d.C1
+				a1.Parent = d.Part1
+				local bs = Instance.new("BallSocketConstraint")
+				bs.Attachment0, bs.Attachment1 = a0, a1
+				bs.LimitsEnabled = true
+				bs.UpperAngle = 70
+				bs.TwistLimitsEnabled = true
+				bs.TwistLowerAngle, bs.TwistUpperAngle = -45, 45
+				bs.MaxFrictionTorque = 3
+				bs.Restitution = 0
+				bs.Parent = d.Part0
+				local nc = Instance.new("NoCollisionConstraint")
+				nc.Part0, nc.Part1 = d.Part0, d.Part1
+				nc.Parent = d.Part0
+				d.Enabled = false
+				table.insert(t.motors, d)
+				table.insert(t.rag, a0)
+				table.insert(t.rag, a1)
+				table.insert(t.rag, bs)
+				table.insert(t.rag, nc)
+			end
+		end
+		if #t.motors == 0 then
+			t.ragdolled = false
+			if not ST.ragWarned then
+				ST.ragWarned = true
+				toast("Can't ragdoll this NPC: no joints found (is it a normal R6/R15 rig?)")
+			end
+			return
+		end
+
+		local body = {}
+		for _, p in ipairs(model:GetChildren()) do
+			if p:IsA("BasePart") and p ~= t.root then
+				table.insert(body, p)
+			end
+		end
+		if #body <= 17 then
+			for a = 1, #body - 1 do
+				for b = a + 1, #body do
+					local nc = Instance.new("NoCollisionConstraint")
+					nc.Part0, nc.Part1 = body[a], body[b]
+					nc.Parent = body[a]
+					table.insert(t.rag, nc)
+				end
+			end
+		end
+		if not ST.ragToasted then
+			ST.ragToasted = true
+			toast("Ragdoll: " .. #t.motors .. " joints released", true)
+		end
+	else
+		if not t.ragdolled then
+			return
+		end
+		t.ragdolled = false
+		for _, i in ipairs(t.rag) do
+			i:Destroy()
+		end
+		if t.oldNeck ~= nil then
+			hum.RequiresNeck = t.oldNeck
+		end
+		if hum.Health <= 0 then
+			return
+		end
+		local root = t.root
+		if not root or not root.Parent then
+			return
+		end
+
+		local rp = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = { model, fxFolder, holder, player.Character }
+		local res = Workspace:Raycast(root.Position + Vector3.new(0, 3, 0), Vector3.new(0, -400, 0), rp)
+		local height
+		if hum.RigType == Enum.HumanoidRigType.R15 then
+			height = hum.HipHeight + root.Size.Y / 2
+		else
+			local leg = model:FindFirstChild("Left Leg")
+			height = (leg and leg.Size.Y or 2) + root.Size.Y / 2
+		end
+		local inAir = (not res) or (root.Position.Y - res.Position.Y) > height + 3
+		local y = inAir and root.Position.Y or (res.Position.Y + height + 0.15)
+		local look = root.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		local yaw = flat.Magnitude > 0.2 and math.atan2(-look.X, -look.Z) or (t.lastYaw or 0)
+		t.lastYaw = yaw
+
+		local parts = collectParts(t)
+		for _, p in ipairs(parts) do
+			p.Anchored = true
+			p.AssemblyLinearVelocity = Vector3.zero
+			p.AssemblyAngularVelocity = Vector3.zero
+		end
+		root.CFrame = CFrame.new(root.Position.X, y, root.Position.Z) * CFrame.Angles(0, yaw, 0)
+		snapToRest(model, root)
+		for _, m in ipairs(t.motors) do
+			if m.Parent then
+				m.Enabled = true
+			end
+		end
+		hum.PlatformStand = false
+		task.delay(0.1, function()
+			if t.ragdolled or not model.Parent then
+				return
+			end
+			for _, p in ipairs(parts) do
+				if p.Parent and not frozenParts[p] then
+					p.Anchored = false
+					p.AssemblyLinearVelocity = Vector3.zero
+					p.AssemblyAngularVelocity = Vector3.zero
+				end
+			end
+			hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end)
+	end
+end
+
+local function scheduleRecover(t)
+	if not t.humanoid then
+		return
+	end
+	t.token = (t.token or 0) + 1
+	local tok = t.token
+	task.spawn(function()
+		task.wait(CONFIG.RagdollTime)
+
+		local waited = 0
+		while t.token == tok and waited < 12 and t.root and t.root.Parent and t.root.AssemblyLinearVelocity.Magnitude > 10 do
+			task.wait(0.25)
+			waited += 0.25
+		end
+		if t.token == tok and holding ~= t and pulling ~= t then
+			setRagdoll(t, false)
+		end
+	end)
+end
+
+local function shockwave(pos, size)
+	local p = Instance.new("Part")
+	p.Shape = Enum.PartType.Ball
+	p.Size = Vector3.one
+	p.Material = Enum.Material.Neon
+	p.Color = accent
+	p.Transparency = 0.35
+	p.Anchored = true
+	p.CanCollide, p.CanQuery, p.CanTouch = false, false, false
+	p.CastShadow = false
+	p.Position = pos
+	p.Parent = Workspace
+	TweenService:Create(
+		p,
+		TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Size = Vector3.one * size, Transparency = 1 }
+	):Play()
+	Debris:AddItem(p, 0.5)
+end
+
+local function zeroG(t)
+	if not S.ZeroG or not t.root or not t.root.Parent then
+		return
+	end
+	local att = Instance.new("Attachment")
+	att.Parent = t.root
+	local vf = Instance.new("VectorForce")
+	vf.Attachment0 = att
+	vf.RelativeTo = Enum.ActuatorRelativeTo.World
+	vf.ApplyAtCenterOfMass = true
+	vf.Force = Vector3.new(0, t.root.AssemblyMass * Workspace.Gravity, 0)
+	vf.Parent = t.root
+	Debris:AddItem(att, S.ZeroGTime)
+	Debris:AddItem(vf, S.ZeroGTime)
+end
+
+local function baseRot(isNpc)
+	local cf = camera.CFrame
+	if isNpc then
+		local l = cf.LookVector
+		local flat = Vector3.new(l.X, 0, l.Z)
+		if flat.Magnitude < 0.01 then
+			return CFrame.new()
+		end
+		return CFrame.lookAt(Vector3.zero, flat)
+	end
+	return cf.Rotation
+end
+
+local function heldRotation(t)
+	local base = baseRot(t.humanoid ~= nil)
+	if S.FollowCamera then
+		t.world = base * t.rel
+	else
+		t.rel = base:Inverse() * t.world
+	end
+	return t.world
+end
+
+local function rotateHeld(t, axis, angle)
+	if math.abs(angle) < 1e-6 then
+		return
+	end
+	local cur = heldRotation(t)
+	local new = (CFrame.fromAxisAngle(axis, angle) * cur):Orthonormalize()
+	t.world = new
+	t.rel = baseRot(t.humanoid ~= nil):Inverse() * new
+end
+
+local function axisVec(kind)
+	local cf = camera.CFrame
+	if kind == 1 then
+		return cf.UpVector
+	elseif kind == 2 then
+		return cf.RightVector
+	elseif kind == 3 then
+		return cf.LookVector
+	end
+	return (cf.UpVector + cf.RightVector * 0.6 + cf.LookVector * 0.35).Unit
+end
+
+function resetRotation()
+	local t = holding
+	if not t then
+		toast("Hold something first")
+		return
+	end
+	local base = baseRot(t.humanoid ~= nil)
+	t.rel = CFrame.new()
+	t.world = base
+	toast("Rotation reset", true)
+end
+
+function toggleSpin()
+	S.AutoSpin = not S.AutoSpin
+	for _, f in ipairs(optionRefreshers) do
+		f()
+	end
+	toast(S.AutoSpin and ("Spin ON - " .. AXIS_NAMES[S.SpinAxis]) or "Spin OFF", true)
+end
+
+function cycleSpinAxis()
+	S.SpinAxis = S.SpinAxis % #AXIS_NAMES + 1
+	for _, f in ipairs(optionRefreshers) do
+		f()
+	end
+	toast("Axis: " .. AXIS_NAMES[S.SpinAxis], true)
+end
+
+function changeDist(d)
+	local step = math.max(1, holdDist / 12)
+	holdDist = math.clamp(holdDist + d * step, CONFIG.MinHoldDistance, CONFIG.MaxHoldDistance)
+end
+
+function zoomBy(steps)
+	targetFov = math.clamp(targetFov * (0.88 ^ steps), CONFIG.ZoomMinFov, CONFIG.ZoomMaxFov)
+end
+
+function adjustFling(dir, objects)
+	local key = objects and "ObjectDistance" or "NpcDistance"
+	local curv = S[key]
+	local step = math.max(25, math.floor(curv * 0.1 / 25 + 0.5) * 25)
+	S[key] = math.clamp(curv + dir * step, CONFIG.MinFling, CONFIG.MaxFling)
+	for _, f in ipairs(optionRefreshers) do
+		f()
+	end
+	toast(string.format("%s fling distance: %d studs", objects and "Object" or "NPC", S[key]), true)
+end
+
+local function holdPosition(t)
+	local cf = camera.CFrame
+	local off = camHeadOffset()
+	local dist = off + holdDist
+	local radius = t.radius or 1
+	local extra = {}
+	if t.model then
+		extra[1] = t.model
+	else
+		for _, p in ipairs(t.parts or {}) do
+			table.insert(extra, p)
+		end
+	end
+	rayParams.FilterDescendantsInstances = buildFilter(extra)
+	local res = Workspace:Raycast(cf.Position, cf.LookVector * (dist + radius), rayParams)
+	if res then
+		dist = math.max(off + 1.5, res.Distance - radius)
+	end
+	return cf.Position + cf.LookVector * dist
+end
+
+local function setBeamTarget(part)
+	if not beam1 or not beam2 then
+		return
+	end
+	if part then
+		PG.beamPart = part
+		beamAtt.Parent = PG.beamHolder
+		PG.updateBeam()
+		beam1.Attachment1 = beamAtt
+		beam2.Attachment1 = beamAtt
+		beam1.Enabled, beam2.Enabled = true, true
+		if PG.beam3 then
+			PG.beam3.Attachment1 = beamAtt
+			PG.beam3.Enabled = true
+		end
+	else
+		beam1.Enabled, beam2.Enabled = false, false
+		if PG.beam3 then
+			PG.beam3.Enabled = false
+		end
+		PG.beamPart = nil
+		beamAtt.Parent = nil
+	end
+end
+
+local function stopPull()
+	if pulling then
+		claim(pulling, false)
+	end
+	pulling = nil
+	if not holding then
+		setBeamTarget(nil)
+	end
+end
+
+local function releaseHold(skipZeroG)
+	if not holding then
+		return
+	end
+	local t = holding
+	holding = nil
+	holdAP, holdAO = nil, nil
+	for _, i in ipairs(holdInstances) do
+		i:Destroy()
+	end
+	table.clear(holdInstances)
+	setBeamTarget(nil)
+	local ncs = t.noCollides or {}
+	task.delay(0.6, function()
+		for _, n in ipairs(ncs) do
+			n:Destroy()
+		end
+	end)
+	t.noCollides = nil
+	claim(t, false)
+	if not skipZeroG then
+		zeroG(t)
+	end
+	scheduleRecover(t)
+end
+
+local function noCollideSets(char, t)
+	local cps = {}
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(cps, d)
+		end
+	end
+	local tps = t.parts
+	if #cps * #tps > CONFIG.MaxNoCollide then
+		cps = {}
+		for _, n in ipairs({ "HumanoidRootPart", "Head", "UpperTorso", "LowerTorso", "Torso" }) do
+			local p = char:FindFirstChild(n)
+			if p and p:IsA("BasePart") then
+				table.insert(cps, p)
+			end
+		end
+		local keep = math.max(1, math.floor(CONFIG.MaxNoCollide / math.max(1, #cps)))
+		if #tps > keep then
+			local sorted = table.clone(tps)
+			table.sort(sorted, function(a, b)
+				return a.Size.Magnitude > b.Size.Magnitude
+			end)
+			tps = table.move(sorted, 1, keep, 1, {})
+		end
+	end
+	return cps, tps
+end
+
+local function grab(t)
+	stopPull()
+	releaseHold(true)
+	if t.mass > CONFIG.MaxMass then
+		playSound("Deny")
+		toast("Too heavy")
+		return
+	end
+	if t.humanoid then
+		setRagdoll(t, true)
+	end
+	t.token = (t.token or 0) + 1
+	t.parts = collectParts(t)
+	measure(t)
+	holding = t
+	local base = baseRot(t.humanoid ~= nil)
+	t.world = t.root.CFrame.Rotation
+	t.rel = base:Inverse() * t.world
+	holdDist = math.clamp(S.HoldDefault + t.radius * 0.6, CONFIG.MinHoldDistance, CONFIG.MaxHoldDistance)
+
+	local pAtt = Instance.new("Attachment")
+	pAtt.Parent = t.root
+
+	local ap = Instance.new("AlignPosition")
+	ap.Mode = Enum.PositionAlignmentMode.TwoAttachment
+	ap.Attachment0, ap.Attachment1 = pAtt, holderAtt
+	ap.RigidityEnabled = false
+	ap.ApplyAtCenterOfMass = true
+	ap.MaxForce = math.huge
+	ap.MaxVelocity = math.clamp(200 - t.mass * 0.01, 90, 220)
+	ap.Responsiveness = S.Snappiness
+	ap.Parent = holder
+
+	local ao = Instance.new("AlignOrientation")
+	ao.Mode = Enum.OrientationAlignmentMode.TwoAttachment
+	ao.Attachment0, ao.Attachment1 = pAtt, holderAtt
+	ao.RigidityEnabled = false
+	ao.MaxTorque = math.huge
+	ao.MaxAngularVelocity = 90
+	ao.Responsiveness = math.clamp(S.Snappiness * 0.7, 8, 70)
+	ao.Parent = holder
+
+	holdAP, holdAO = ap, ao
+	table.insert(holdInstances, pAtt)
+	table.insert(holdInstances, ap)
+	table.insert(holdInstances, ao)
+
+	t.noCollides = {}
+	local char = player.Character
+	if char then
+		local cpList, tpList = noCollideSets(char, t)
+		for _, cp in ipairs(cpList) do
+			for _, tp in ipairs(tpList) do
+				local nc = Instance.new("NoCollisionConstraint")
+				nc.Part0, nc.Part1 = cp, tp
+				nc.Parent = holder
+				table.insert(t.noCollides, nc)
+			end
+		end
+	end
+
+	setBeamTarget(t.root)
+	claim(t, true)
+	flash = 0.6
+	playSound("Grab")
+end
+
+local function startPull(t)
+	if t.humanoid then
+		setRagdoll(t, true)
+	end
+	t.token = (t.token or 0) + 1
+	pulling = t
+	t.pullStartPos = nil
+	pullStart = os.clock()
+	claim(t, true)
+	setBeamTarget(t.root)
+	playSound("Grab")
+end
+
+local function flingVelocity(dist, dir)
+	local g = math.max(Workspace.Gravity, 20)
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.05 then
+		local l = camera.CFrame.LookVector
+		flat = Vector3.new(l.X, 0, l.Z)
+		if flat.Magnitude < 0.05 then
+			flat = Vector3.new(0, 0, -1)
+		end
+	end
+	flat = flat.Unit
+	local minA, maxA = math.rad(14), math.rad(55)
+	local elev = math.asin(math.clamp(dir.Y, -1, 1))
+	local theta = math.clamp(elev, minA, maxA)
+	local speed = math.min(math.sqrt(math.max(dist, 1) * g / math.sin(2 * theta)), CONFIG.MaxLaunchSpeed)
+	local launchDir = dir
+
+	if elev < minA and elev > -math.rad(10) then
+		launchDir = flat * math.cos(minA) + Vector3.yAxis * math.sin(minA)
+	end
+	return launchDir.Unit * speed
+end
+
+local ARC = { parts = {}, ring = nil, shown = false, timer = 0 }
+do
+	for i = 1, 30 do
+		local p = mkPart("Arc" .. i, Vector3.one * 0.4, accent, Enum.Material.Neon, Enum.PartType.Ball)
+		p.Transparency = 1
+		bindAccent(p, "Color")
+		ARC.parts[i] = p
+	end
+	ARC.ring = mkPart("ArcLanding", Vector3.new(0.2, 5, 5), accent, Enum.Material.Neon, CYL)
+	ARC.ring.Transparency = 1
+	bindAccent(ARC.ring, "Color")
+end
+
+function ARC.hide()
+	ARC.shown = false
+	for _, p in ipairs(ARC.parts) do
+		p.Transparency = 1
+	end
+	ARC.ring.Transparency = 1
+end
+
+function ARC.update(t)
+	local dist = t.humanoid and S.NpcDistance or S.ObjectDistance
+	local v = flingVelocity(dist, camera.CFrame.LookVector)
+	local g = math.max(Workspace.Gravity, 20)
+	local p0 = t.root.Position
+	local total = math.clamp(2 * math.max(v.Y, 8) / g * 1.25, 0.6, 10)
+	local extra = {}
+	if t.model then
+		extra[1] = t.model
+	else
+		for _, p in ipairs(t.parts or {}) do
+			table.insert(extra, p)
+		end
+	end
+	rayParams.FilterDescendantsInstances = buildFilter(extra)
+	local n = #ARC.parts
+	local prev = p0
+	local hit = nil
+	for i = 1, n do
+		local part = ARC.parts[i]
+		if hit then
+			part.Transparency = 1
+		else
+			local tt = total * i / n
+			local pos = p0 + v * tt + Vector3.new(0, -0.5 * g * tt * tt, 0)
+			local seg = pos - prev
+			local res = seg.Magnitude > 0.01 and Workspace:Raycast(prev, seg, rayParams) or nil
+			if res then
+				hit = res
+				part.Position = res.Position
+			else
+				part.Position = pos
+			end
+			part.Transparency = 0.2 + 0.5 * (i / n)
+			prev = pos
+		end
+	end
+	if hit then
+		ARC.ring.CFrame = CFrame.lookAt(hit.Position, hit.Position + hit.Normal) * CFrame.Angles(0, math.rad(90), 0)
+		ARC.ring.Transparency = 0.35
+	else
+		ARC.ring.Transparency = 1
+	end
+	ARC.shown = true
+end
+
+local function launch(t, dir, spinAxis)
+	if frozenStates[t.root] then
+		toast("Frozen - press G to unfreeze first")
+		return
+	end
+	local factor = math.clamp(1 - t.mass / (CONFIG.PuntMassScale * 2), 0.4, 1)
+	local vel = flingVelocity(t.humanoid and S.NpcDistance or S.ObjectDistance, dir) * factor
+	local ts = THROW_SPIN[S.ThrowSpin]
+	local done = {}
+	for _, p in ipairs(collectParts(t)) do
+		local r = p.AssemblyRootPart
+		if r and not done[r] and not r.Anchored then
+			done[r] = true
+			r.AssemblyLinearVelocity = vel
+			local ang = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5).Unit * ts
+			if spinAxis and S.AutoSpin then
+				ang += spinAxis * S.SpinSpeed * 2
+			end
+			r.AssemblyAngularVelocity = ang
+		end
+	end
+	ST.fovKick = 9
+	zeroG(t)
+	ST.trackImpacts(t)
+end
+
+function freezeTarget(t)
+	if not t or not t.root then
+		return
+	end
+	local root = t.root
+	local fs = frozenStates[root]
+	if fs then
+		frozenStates[root] = nil
+		for p, st in pairs(fs.parts) do
+			frozenParts[p] = nil
+			if p.Parent then
+				p.Anchored = st.anchored
+				if not p.Anchored then
+					p.AssemblyLinearVelocity = st.linear
+					p.AssemblyAngularVelocity = st.angular
+				end
+			end
+		end
+		if fs.hl then
+			fs.hl:Destroy()
+		end
+		if t.humanoid then
+			scheduleRecover(t)
+		end
+		toast("Unfrozen", true)
+		return
+	end
+	if not alive(t) then
+		return
+	end
+	local state = {}
+	for _, p in ipairs(collectParts(t)) do
+		if p:IsA("BasePart") and not p.Anchored then
+			state[p] = { anchored = p.Anchored, linear = p.AssemblyLinearVelocity, angular = p.AssemblyAngularVelocity }
+			p.AssemblyLinearVelocity = Vector3.zero
+			p.AssemblyAngularVelocity = Vector3.zero
+			p.Anchored = true
+			frozenParts[p] = root
+		end
+	end
+	local hl = Instance.new("Highlight")
+	hl.FillColor = Color3.fromRGB(120, 200, 255)
+	hl.OutlineColor = Color3.fromRGB(220, 245, 255)
+	hl.FillTransparency = 0.6
+	hl.Adornee = t.model or root
+	hl.Parent = Workspace
+	frozenStates[root] = { parts = state, hl = hl, t = t }
+	toast("Frozen - aim at it and press G to unfreeze", true)
+end
+
+function ST.freezeAim()
+	if holding then
+		local t = holding
+		releaseHold(true)
+		freezeTarget(t)
+		return
+	end
+	if pulling then
+		local t = pulling
+		stopPull()
+		freezeTarget(t)
+		return
+	end
+	local t = findTarget(S.Range)
+	if t then
+		freezeTarget(t)
+		return
+	end
+	local res = castAim(S.Range)
+	local root = res and frozenParts[res.Instance]
+	if root and frozenStates[root] then
+		freezeTarget(frozenStates[root].t)
+		return
+	end
+	toast("Aim at something first")
+end
+
+function ST.unfreezeAll()
+	local list = {}
+	for _, fs in pairs(frozenStates) do
+		table.insert(list, fs.t)
+	end
+	if #list == 0 then
+		toast("Nothing is frozen")
+		return
+	end
+	for _, t in ipairs(list) do
+		freezeTarget(t)
+	end
+end
+
+do
+	function ST.trackImpacts(t)
+		if not (S.ImpactRagdoll or S.ImpactDamage) then
+			return
+		end
+		local conns, hitAt = {}, {}
+		for i, p in ipairs(collectParts(t)) do
+			if i > 24 then
+				break
+			end
+			table.insert(
+				conns,
+				p.Touched:Connect(function(hit)
+					if not t.root or not t.root.Parent then
+						return
+					end
+					local v = t.root.AssemblyLinearVelocity
+					local speed = v.Magnitude
+					if speed < 40 then
+						return
+					end
+					local other = resolveTarget(hit)
+					if not other or not other.humanoid or other.root == t.root or other.model == t.model then
+						return
+					end
+					local now = os.clock()
+					if hitAt[other.root] and now - hitAt[other.root] < 0.5 then
+						return
+					end
+					hitAt[other.root] = now
+					if S.ImpactRagdoll then
+						setRagdoll(other, true)
+						local push = v.Unit * speed * (S.ImpactPower / 100) + Vector3.new(0, speed * 0.1, 0)
+						for _, part in ipairs(collectParts(other)) do
+							local r = part.AssemblyRootPart
+							if r and not r.Anchored then
+								r.AssemblyLinearVelocity = push
+							end
+						end
+						scheduleRecover(other)
+					end
+					if S.ImpactDamage and other.humanoid.Health > 0 then
+						other.humanoid:TakeDamage(math.clamp(speed * 0.25, 5, 80))
+					end
+					shockwave(hit.Position, 6)
+				end)
+			)
+		end
+		task.delay(4, function()
+			for _, c in ipairs(conns) do
+				c:Disconnect()
+			end
+		end)
+	end
+end
+
+local function tryGrab(t, dist)
+	if not t then
+		return
+	end
+	if t.mass > CONFIG.MaxMass then
+		playSound("Deny")
+		toast("Too heavy")
+		return
+	end
+	if dist <= CONFIG.GrabRange then
+		grab(t)
+	else
+		startPull(t)
+	end
+end
+
+function grabToggle()
+	if not equipped then
+		return
+	end
+	if holding then
+		releaseHold()
+		playSound("Drop")
+		return
+	end
+	if pulling then
+		stopPull()
+		return
+	end
+	local t, res, off = findTarget(S.Range)
+	if t and frozenStates[t.root] then
+		toast("Frozen - press G to unfreeze")
+		return
+	end
+	if not t then
+		if res then
+			playSound("Deny")
+			toast(res.Instance.Anchored and "That's anchored" or "Can't grab that")
+		end
+		return
+	end
+	tryGrab(t, res.Distance - off)
+end
+
+function punt()
+	if not equipped then
+		return
+	end
+	local dir = camera.CFrame.LookVector
+	recoil = 1
+	flash = 1
+
+	if holding then
+		playSound("Punt")
+		local t = holding
+		local pos = t.root.Position
+		local axis = axisVec(S.SpinAxis)
+		releaseHold(true)
+		launch(t, dir, axis)
+		shockwave(pos, 8)
+		return
+	end
+	stopPull()
+	playSound("Fire")
+
+	local t, res = findTarget(S.Range)
+	if not res then
+		return
+	end
+	if t then
+		if t.humanoid then
+			setRagdoll(t, true)
+			scheduleRecover(t)
+		end
+		claim(t, true)
+		if ownershipRemote then
+			task.wait(0.25)
+		end
+		if alive(t) then
+			launch(t, dir)
+		end
+		claim(t, false)
+		shockwave(res.Position, 12)
+	else
+		shockwave(res.Position, 5)
+	end
+end
+
+do
+	local folder = Instance.new("Folder")
+	folder.Name = "GravityGunNPCs"
+	folder.Parent = Workspace
+	local spawned = {}
+
+	local function randomColor()
+		return Color3.fromHSV(math.random(), 0.55, 0.9)
+	end
+
+	local function makeR15()
+		local desc = Instance.new("HumanoidDescription")
+		local skin = Color3.fromRGB(245, 205, 48)
+		local shirt = randomColor()
+		desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = skin, skin, skin
+		desc.TorsoColor = shirt
+		desc.LeftLegColor, desc.RightLegColor = Color3.fromRGB(60, 70, 110), Color3.fromRGB(60, 70, 110)
+		local ok, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
+		end)
+		if ok and model then
+			return model
+		end
+		return nil
+	end
+
+	local avatarCache
+	local function makeAvatar()
+		local uid = CONFIG.NpcUserId ~= 0 and CONFIG.NpcUserId or player.UserId
+		if not avatarCache or avatarCache.uid ~= uid then
+			local ok, desc = pcall(function()
+				return Players:GetHumanoidDescriptionFromUserId(uid)
+			end)
+			if not (ok and desc) then
+				return nil
+			end
+			avatarCache = { uid = uid, desc = desc }
+		end
+		local ok, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescription(avatarCache.desc, Enum.HumanoidRigType.R15)
+		end)
+		return ok and model or nil
+	end
+
+	local function makeR6()
+		local m = Instance.new("Model")
+		local skin = Color3.fromRGB(245, 205, 48)
+		local function mk(name, size, col)
+			local p = Instance.new("Part")
+			p.Name = name
+			p.Size = size
+			p.Color = col
+			p.TopSurface = Enum.SurfaceType.Smooth
+			p.BottomSurface = Enum.SurfaceType.Smooth
+			p.Parent = m
+			return p
+		end
+		local hrp = mk("HumanoidRootPart", Vector3.new(2, 2, 1), skin)
+		hrp.Transparency = 1
+		local torso = mk("Torso", Vector3.new(2, 2, 1), randomColor())
+		local head = mk("Head", Vector3.new(2, 1, 1), skin)
+		local mesh = Instance.new("SpecialMesh")
+		mesh.MeshType = Enum.MeshType.Head
+		mesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+		mesh.Parent = head
+		local face = Instance.new("Decal")
+		face.Name = "face"
+		face.Texture = "rbxasset://textures/face.png"
+		face.Parent = head
+		local legCol = Color3.fromRGB(60, 70, 110)
+		local la = mk("Left Arm", Vector3.new(1, 2, 1), skin)
+		local ra = mk("Right Arm", Vector3.new(1, 2, 1), skin)
+		local ll = mk("Left Leg", Vector3.new(1, 2, 1), legCol)
+		local rl = mk("Right Leg", Vector3.new(1, 2, 1), legCol)
+		local function joint(name, p0, p1, c0)
+			local j = Instance.new("Motor6D")
+			j.Name = name
+			j.Part0, j.Part1 = p0, p1
+			j.C0, j.C1 = c0, CFrame.new()
+			j.Parent = p0
+		end
+		joint("RootJoint", hrp, torso, CFrame.new())
+		joint("Neck", torso, head, CFrame.new(0, 1.5, 0))
+		joint("Right Shoulder", torso, ra, CFrame.new(1.5, 0, 0))
+		joint("Left Shoulder", torso, la, CFrame.new(-1.5, 0, 0))
+		joint("Right Hip", torso, rl, CFrame.new(0.5, -2, 0))
+		joint("Left Hip", torso, ll, CFrame.new(-0.5, -2, 0))
+		local hum = Instance.new("Humanoid")
+		hum.RigType = Enum.HumanoidRigType.R6
+		hum.Parent = m
+		m.PrimaryPart = hrp
+		return m
+	end
+
+	function ST.clearNpcs()
+		for _, m in ipairs(spawned) do
+			m:Destroy()
+		end
+		table.clear(spawned)
+		toast("Removed spawned NPCs", true)
+	end
+
+	function ST.ragdollAll()
+		local n = 0
+		for _, m in ipairs(spawned) do
+			if m.Parent then
+				local t = resolveTarget(m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart)
+				if t then
+					setRagdoll(t, true)
+					scheduleRecover(t)
+					n += 1
+				end
+			end
+		end
+		toast(n > 0 and ("Ragdolled " .. n .. " NPCs") or "No NPCs to ragdoll", n > 0)
+	end
+
+	function ST.spawn()
+		if not equipped then
+			return
+		end
+		for i = #spawned, 1, -1 do
+			if not spawned[i].Parent then
+				table.remove(spawned, i)
+			end
+		end
+		local res = castAim(S.Range)
+		local pos = res and (res.Position + res.Normal * 0.5) or (camera.CFrame.Position + camera.CFrame.LookVector * 20)
+		local count, kind, size = S.SpawnCount, S.NpcType, S.NpcSize
+		task.spawn(function()
+			for i = 1, count do
+				if #spawned >= CONFIG.MaxSpawned then
+					toast("NPC limit reached (" .. CONFIG.MaxSpawned .. ")")
+					break
+				end
+				if i > 1 then
+					task.wait()
+				end
+				local model
+				if kind == 1 then
+					model = makeAvatar()
+				end
+				if not model and kind <= 2 then
+					model = makeR15()
+				end
+				if not model then
+					model = makeR6()
+				end
+				model.Name = "NPC"
+				local nh = model:FindFirstChildOfClass("Humanoid")
+				if nh then
+					nh.BreakJointsOnDeath = false
+					pcall(function()
+						nh:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+					end)
+				end
+				pcall(function()
+					model:ScaleTo(size)
+				end)
+				local ang = i * 2.4
+				local r = i == 1 and 0 or (3 * size + math.sqrt(i) * 3 * size)
+				local at = pos + Vector3.new(math.cos(ang) * r, 3 * size + 1, math.sin(ang) * r)
+				model:PivotTo(CFrame.new(at) * CFrame.Angles(0, math.random() * 6.28, 0))
+				model.Parent = folder
+				table.insert(spawned, model)
+				shockwave(at, 6)
+			end
+		end)
+	end
+
+	function ST.pulse()
+		if not equipped then
+			return
+		end
+		local res = castAim(S.Range)
+		local center = res and (res.Position + res.Normal * 1.5) or (camera.CFrame.Position + camera.CFrame.LookVector * 40)
+		local radius = S.PulseRadius
+		recoil, flash = 1, 1
+		ST.fovKick = 12
+		playSound("Fire")
+		shockwave(center, radius * 2)
+		local params = OverlapParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { player.Character, fxFolder, holder }
+		local found = Workspace:GetPartBoundsInRadius(center, radius, params)
+		local seen = {}
+		for _, p in ipairs(found) do
+			local t = resolveTarget(p)
+			if t and t.root and not seen[t.root] and t ~= holding then
+				seen[t.root] = true
+				local away = t.root.Position - center
+				local d = away.Magnitude
+				local dirv = d > 0.5 and away.Unit or Vector3.yAxis
+				local fall = 1 - 0.6 * math.clamp(d / radius, 0, 1)
+				local v = (dirv + Vector3.new(0, 0.6, 0)).Unit * S.PulsePower * fall
+				if t.humanoid then
+					setRagdoll(t, true)
+					scheduleRecover(t)
+				end
+				for _, part in ipairs(collectParts(t)) do
+					local r = part.AssemblyRootPart
+					if r and not r.Anchored then
+						r.AssemblyLinearVelocity = v
+						r.AssemblyAngularVelocity = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * 20
+					end
+				end
+			end
+		end
+	end
+end
+
+local savedCameraMode, savedZoom, savedMinZoom, savedMaxZoom
+
+local function enterFirstPerson()
+	if savedCameraMode then
+		return
+	end
+	savedCameraMode = player.CameraMode
+	savedMinZoom, savedMaxZoom = player.CameraMinZoomDistance, player.CameraMaxZoomDistance
+	local focus = camera.Focus.Position
+	savedZoom = math.clamp((camera.CFrame.Position - focus).Magnitude, savedMinZoom, savedMaxZoom)
+	player.CameraMode = Enum.CameraMode.LockFirstPerson
+end
+
+local function exitFirstPerson()
+	if not savedCameraMode then
+		return
+	end
+	local mode, minZ, maxZ = savedCameraMode, savedMinZoom or 0.5, savedMaxZoom or 128
+	local zoom = math.clamp(math.max(savedZoom or 12, 10), minZ, math.max(minZ, maxZ))
+	savedCameraMode = nil
+	player.CameraMode = mode
+	if mode ~= Enum.CameraMode.LockFirstPerson then
+
+		player.CameraMinZoomDistance = zoom
+		player.CameraMaxZoomDistance = zoom
+		task.delay(0.15, function()
+			if not savedCameraMode then
+				player.CameraMinZoomDistance = minZ
+				player.CameraMaxZoomDistance = maxZ
+			end
+		end)
+	end
+end
+
+function applyView()
+	if not equipped then
+		return
+	end
+	if S.View == 3 then
+		enterFirstPerson()
+	else
+		exitFirstPerson()
+	end
+end
+
+function toggleView()
+	S.View = S.View % #VIEW_NAMES + 1
+	for _, f in ipairs(optionRefreshers) do
+		f()
+	end
+	applyView()
+	toast("Camera: " .. VIEW_NAMES[S.View], true)
+end
+
+local zoomWasActive = false
+pcall(function()
+	RunService:UnbindFromRenderStep("GravityGunZoom")
+end)
+RunService:BindToRenderStep("GravityGunZoom", Enum.RenderPriority.Camera.Value + 2, function(dt)
+	if equipped then
+		if not UserInputService:GetFocusedTextBox() and not panelOpen then
+			local zi = UserInputService:IsKeyDown(CONFIG.ZoomKeyIn)
+			local zo = UserInputService:IsKeyDown(CONFIG.ZoomKeyOut)
+			if zi and not zo then
+				zoomBy(CONFIG.ZoomHoldSpeed * dt)
+			elseif zo and not zi then
+				zoomBy(-CONFIG.ZoomHoldSpeed * dt)
+			end
+		end
+		curFov = lerp(curFov, targetFov, 1 - math.exp(-dt * 12))
+		ST.fovKick = ST.fovKick * math.exp(-dt * 7)
+			camera.FieldOfView = curFov + ST.fovKick
+		UserInputService.MouseDeltaSensitivity = savedSens * math.clamp(curFov / baseFov, 0.1, 1)
+		zoomWasActive = true
+	elseif zoomWasActive then
+		zoomWasActive = false
+		camera.FieldOfView = baseFov
+		UserInputService.MouseDeltaSensitivity = savedSens
+	end
+end)
+
+local SH = { active = false, ramp = 0, pitch = 0 }
+local TP = { alpha = 0, lowered = 0, on = false, char = nil, R = nil, L = nil, frame = nil, autoRotate = nil, run = shared.GG_RUN }
+
+function TP.findArm(char, side)
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum then
+		return nil
+	end
+	if hum.RigType == Enum.HumanoidRigType.R15 then
+		local torso = char:FindFirstChild("UpperTorso")
+		local upper = char:FindFirstChild(side .. "UpperArm")
+		local lower = char:FindFirstChild(side .. "LowerArm")
+		local hand = char:FindFirstChild(side .. "Hand")
+		local sh = upper and upper:FindFirstChild(side .. "Shoulder")
+		if torso and sh and sh:IsA("Motor6D") then
+			return {
+				motor = sh,
+				p0 = torso,
+				c0 = sh.C0,
+				c1rot = sh.C1.Rotation,
+				r15 = true,
+				elbow = lower and lower:FindFirstChild(side .. "Elbow"),
+				wrist = hand and hand:FindFirstChild(side .. "Wrist"),
+			}
+		end
+	else
+		local torso = char:FindFirstChild("Torso")
+		local sh = torso and torso:FindFirstChild(side .. " Shoulder")
+		if torso and sh and sh:IsA("Motor6D") then
+			return { motor = sh, p0 = torso, c0 = sh.C0, c1rot = sh.C1.Rotation, r15 = false }
+		end
+	end
+	return nil
+end
+
+function TP.aimArm(arm, dir, alpha)
+	local joint = arm.p0.CFrame * arm.c0
+	local rot = CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(math.rad(90), 0, 0)
+	local want = arm.p0.CFrame:Inverse() * (CFrame.new(joint.Position) * rot * arm.c1rot)
+	arm.motor.C0 = arm.c0:Lerp(want, alpha)
+	arm.motor.Transform = arm.motor.Transform:Lerp(CFrame.new(), alpha)
+
+	if arm.elbow then
+		arm.elbow.Transform = arm.elbow.Transform:Lerp(CFrame.new(), alpha)
+	end
+	if arm.wrist then
+		arm.wrist.Transform = arm.wrist.Transform:Lerp(CFrame.new(), alpha)
+	end
+end
+
+function TP.aimPoint()
+	rayParams.FilterDescendantsInstances = buildFilter()
+	local cf = camera.CFrame
+	local res = Workspace:Raycast(cf.Position, cf.LookVector * 600, rayParams)
+	return res and res.Position or (cf.Position + cf.LookVector * 600)
+end
+
+function TP.aimDirection(origin)
+	local cf = camera.CFrame
+	local pt = TP.aimPoint()
+	local d = pt - origin
+	if d.Magnitude < 3 then
+		return cf.LookVector
+	end
+	return d.Unit
+end
+
+function TP.clampPitch(dir, lo, hi)
+	local el = math.asin(math.clamp(dir.Y, -1, 1))
+	local c = math.clamp(el, lo, hi)
+	if c == el then
+		return dir
+	end
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.01 then
+		local l = camera.CFrame.LookVector
+		flat = Vector3.new(l.X, 0, l.Z)
+		if flat.Magnitude < 0.01 then
+			flat = Vector3.new(0, 0, -1)
+		end
+	end
+	return (flat.Unit * math.cos(c) + Vector3.yAxis * math.sin(c)).Unit
+end
+
+function TP.release()
+	for _, arm in ipairs({ TP.R or false, TP.L or false }) do
+		if arm and arm.motor.Parent then
+			arm.motor.C0 = arm.c0
+		end
+	end
+	local hum = TP.char and TP.char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		if TP.autoRotate ~= nil then
+			hum.AutoRotate = TP.autoRotate
+		end
+		hum.CameraOffset = Vector3.zero
+	end
+	if TP.on then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+	end
+	TP.on, TP.frame, TP.R, TP.L, TP.char, TP.autoRotate = false, nil, nil, nil, nil, nil
+end
+
+function TP.update(dt)
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local ok = hum ~= nil and hrp ~= nil and hum.Health > 0
+	local want = equipped and S.View == 2 and ok
+	if TP.char and (TP.char ~= char or not ok) then
+		TP.release()
+	end
+	if want and not TP.char then
+		TP.char = char
+		TP.R = TP.findArm(char, "Right")
+		TP.L = TP.findArm(char, "Left")
+		TP.autoRotate = hum.AutoRotate
+		hum.AutoRotate = false
+	end
+	TP.alpha = lerp(TP.alpha, want and 1 or 0, 1 - math.exp(-dt * 9))
+	if not TP.char then
+		TP.frame = nil
+		return
+	end
+	if not want and TP.alpha < 0.03 then
+		TP.release()
+		return
+	end
+	TP.on = true
+
+	if want then
+
+		if not hum.Sit then
+			local look = camera.CFrame.LookVector
+			if SH.active then
+				local dd = TP.aimPoint() - (hrp.CFrame * Vector3.new(1.5, 0.5, 0))
+				if Vector3.new(dd.X, 0, dd.Z).Magnitude > 6 then
+					look = dd
+				end
+			end
+			local flat = Vector3.new(look.X, 0, look.Z)
+			if flat.Magnitude > 0.01 then
+				local goalRot = CFrame.lookAt(Vector3.zero, flat)
+				hrp.CFrame = CFrame.new(hrp.Position) * hrp.CFrame.Rotation:Lerp(goalRot, 1 - math.exp(-dt * 22))
+			end
+		end
+
+		local goal = S.ShoulderCam and CONFIG.ShoulderOffset or Vector3.zero
+		hum.CameraOffset = hum.CameraOffset:Lerp(goal, 1 - math.exp(-dt * 10))
+		if not isTouch then
+			if panelOpen then
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				UserInputService.MouseIconEnabled = true
+			else
+				UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+				UserInputService.MouseIconEnabled = false
+			end
+		end
+	end
+
+	local R, L = TP.R, TP.L
+	if SH.active then
+		R, L = nil, nil
+	end
+	TP.frame = nil
+	if R and R.p0.Parent then
+		local rj = (R.p0.CFrame * R.c0).Position
+		local lj = (L and L.p0.Parent) and (L.p0.CFrame * L.c0).Position or rj
+		local mid = (rj + lj) / 2
+
+		TP.lowered = lerp(TP.lowered, holding and 1 or 0, 1 - math.exp(-dt * 8))
+		local dir = TP.clampPitch(TP.aimDirection(mid), math.rad(-40 + 15 * TP.lowered), math.rad(35 - 25 * TP.lowered))
+
+		local blend = Vector3.new(0, -1, 0):Lerp(dir, TP.alpha)
+		if blend.Magnitude < 0.01 then
+			blend = dir
+		end
+		blend = blend.Unit
+
+		local reach = R.r15 and 2.0 or 1.7
+		local lat = (rj - lj).Magnitude / 2
+		local fwd = math.sqrt(math.max(reach * reach - lat * lat - 0.09, 0.3))
+		local p = mid + blend * fwd + Vector3.new(0, -0.3 - 0.3 * TP.lowered, 0)
+		local g = CFrame.lookAt(p, p + blend)
+		TP.frame = g
+
+		local len = CONFIG.ModelLength * S.ModelScale
+		local handle = (g * CFrame.new(0, -0.3, len * 0.14)).Position
+		local trigger = (g * CFrame.new(0, -0.12, -len * 0.14)).Position
+		local rightGrip, leftGrip = handle, trigger
+		if S.SwapHands then
+			rightGrip, leftGrip = trigger, handle
+		end
+		TP.aimArm(R, (rightGrip - rj).Unit, TP.alpha)
+		if L and L.p0.Parent then
+			if S.TwoHanded then
+				TP.aimArm(L, (leftGrip - lj).Unit, TP.alpha)
+			else
+				L.motor.C0 = L.c0
+			end
+		end
+	end
+end
+
+function SH.start()
+	SH.stop()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.RigType ~= Enum.HumanoidRigType.R6 then
+		return
+	end
+	local token = {}
+	SH.token = token
+	task.spawn(function()
+		local function waitFor(obj, name)
+			local t0 = os.clock()
+			while obj.Parent and not obj:FindFirstChild(name) and os.clock() - t0 < 10 do
+				task.wait(0.1)
+			end
+			return obj:FindFirstChild(name)
+		end
+		local torso = waitFor(char, "Torso")
+		local rArm = waitFor(char, "Right Arm")
+		local lArm = waitFor(char, "Left Arm")
+		if not (torso and rArm and lArm) then
+			return
+		end
+		local rsh = waitFor(torso, "Right Shoulder")
+		local lsh = waitFor(torso, "Left Shoulder")
+		local grip = waitFor(rArm, "RightGrip")
+		if SH.token ~= token or not equipped or not (rsh and lsh and grip) then
+			return
+		end
+		local rw, lw = Instance.new("Weld"), Instance.new("Weld")
+		rsh.Part1 = nil
+		lsh.Part1 = nil
+		rw.Part0 = torso
+		rw.C0 = CFrame.new(1.5, 0.5, 0)
+		rw.C1 = CFrame.new(0, 0.5, 0)
+		rw.Part1 = rArm
+		rw.Parent = torso
+		lw.Part0 = torso
+		lw.C0 = CFrame.new(-1.5, 0.5, 0)
+		lw.C1 = CFrame.new(0, 0.5, 0)
+		lw.Part1 = lArm
+		lw.Parent = torso
+		grip.C0 = CFrame.new(0, -1, -0.5) * CFrame.fromEulerAnglesXYZ(-1.22, -0.45, 0.22)
+		SH.char, SH.rsh, SH.lsh, SH.rw, SH.lw, SH.grip = char, rsh, lsh, rw, lw, grip
+		SH.ramp = 0
+		SH.active = true
+	end)
+end
+
+function SH.stop()
+	SH.token = nil
+	if not SH.active then
+		return
+	end
+	SH.active = false
+	pcall(function()
+		SH.rw:Destroy()
+	end)
+	pcall(function()
+		SH.lw:Destroy()
+	end)
+	pcall(function()
+		if SH.rsh.Parent then
+			SH.rsh.Part1 = SH.char["Right Arm"]
+		end
+	end)
+	pcall(function()
+		if SH.lsh.Parent then
+			SH.lsh.Part1 = SH.char["Left Arm"]
+		end
+	end)
+end
+
+function SH.update(dt)
+	if not SH.active then
+		return
+	end
+	local char = SH.char
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (char and char.Parent and char == player.Character and SH.rw.Parent and hum and hum.Health > 0) then
+		SH.stop()
+		return
+	end
+	SH.ramp = math.min(SH.ramp + dt * 3, 1)
+	local i = SH.ramp
+
+	local shoulder = SH.rw.Part0.CFrame * Vector3.new(1.5, 0.5, 0)
+	local d = TP.aimPoint() - shoulder
+	local dir = d.Magnitude > 4 and d.Unit or camera.CFrame.LookVector
+	local goal = math.clamp(math.asin(math.clamp(dir.Y, -1, 1)), math.rad(-70), math.rad(70))
+	SH.pitch = lerp(SH.pitch, goal, 1 - math.exp(-dt * 16))
+	local p = SH.pitch * i
+	SH.rw.C0 = CFrame.new(1.5, 0.5, 0.25) * CFrame.fromEulerAnglesXYZ(1.3 * i + p, 0, -0.5 * i)
+	SH.lw.C0 = CFrame.new(-1.5, 0.5, 0) * CFrame.fromEulerAnglesXYZ(1.7 * i + p, 0, 0.8 * i)
+	SH.lw.C1 = CFrame.new(0.3 * i, 1 + i, 0)
+end
+
+local function setMobileButtons(visible)
+	UI.setButtons(visible)
+end
+
+local function onEquip()
+	if equipped then
+		return
+	end
+	equipped = true
+	applyView()
+	SH.start()
+	cross.Visible = true
+	applyHudVisibility()
+	if hint then
+		hint.Visible = true
+	end
+	setMobileButtons(true)
+	playSound("Equip")
+	if PG.failed then
+		toast("Gravity gun asset didn't load - placeholder used (see Output)")
+	end
+	baseFov = camera.FieldOfView
+	targetFov, curFov = baseFov, baseFov
+	savedSens = UserInputService.MouseDeltaSensitivity
+	if not ST.notified then
+		ST.notified = true
+		local ok = pcall(function()
+			StarterGui:SetCore("SendNotification", {
+				Title = CONFIG.NotifyTitle,
+				Text = CONFIG.NotifyText,
+				Duration = 6,
+				Button1 = "OK",
+			})
+		end)
+		if not ok then
+			toast(CONFIG.NotifyTitle .. " - " .. CONFIG.NotifyText, true)
+		end
+	end
+end
+
+local function onUnequip()
+	if not equipped then
+		return
+	end
+	equipped = false
+	SH.stop()
+	setPanel(false)
+	releaseHold()
+	stopPull()
+	highlight.Adornee = nil
+	tag.Enabled = false
+	currentAim = nil
+	cross.Visible = false
+	UI.hud.Visible = false
+	ARC.hide()
+	toastLabel.Visible = false
+	mobileRot = 0
+	if hint then
+		hint.Visible = false
+	end
+	setMobileButtons(false)
+	exitFirstPerson()
+end
+
+local tool
+local function ensureTool()
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if not backpack then
+		return
+	end
+	if tool then
+		local par = tool.Parent
+		if par == backpack or (par ~= nil and par == player.Character) then
+			return
+		end
+
+		local ok = pcall(function()
+			tool.Parent = backpack
+		end)
+		if ok and tool.Parent == backpack then
+			return
+		end
+		pcall(function()
+			tool:Destroy()
+		end)
+	end
+	tool = Instance.new("Tool")
+	tool.Name = CONFIG.ToolName
+	tool.ToolTip = CONFIG.ToolName
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool.TextureId = ""
+	local okBuild, errBuild = pcall(PG.build, tool)
+	if not okBuild then
+		warn("[GravityGun] gun model setup failed (tool still given): " .. tostring(errBuild))
+	end
+	tool.Equipped:Connect(onEquip)
+	tool.Unequipped:Connect(onUnequip)
+	tool.Parent = backpack
+end
+
+player.CharacterAdded:Connect(function()
+	task.spawn(function()
+		player:WaitForChild("Backpack", 10)
+		for _, delay in ipairs({ 0, 0.4, 1, 2.5 }) do
+			if delay > 0 then
+				task.wait(delay)
+			end
+			if shared.GG_RUN ~= TP.run then
+				return
+			end
+			ensureTool()
+		end
+	end)
+end)
+player.ChildAdded:Connect(function(child)
+	if child:IsA("Backpack") and shared.GG_RUN == TP.run then
+		task.defer(ensureTool)
+	end
+end)
+player.CharacterRemoving:Connect(function()
+	onUnequip()
+end)
+task.spawn(function()
+	player:WaitForChild("Backpack")
+	while shared.GG_RUN == TP.run do
+		ensureTool()
+		task.wait(0.5)
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp or not equipped or shared.GG_RUN ~= TP.run then
+		return
+	end
+	local kc, ut = input.KeyCode, input.UserInputType
+	if kc == CONFIG.OptionsKey then
+		setPanel(not panelOpen)
+		return
+	end
+	if panelOpen then
+		return
+	end
+	if ut == Enum.UserInputType.MouseButton1 or kc == Enum.KeyCode.ButtonR2 then
+		punt()
+	elseif (CONFIG.UseRightMouse and ut == Enum.UserInputType.MouseButton2) or kc == CONFIG.GrabKey or kc == Enum.KeyCode.ButtonL2 then
+		grabToggle()
+	elseif kc == CONFIG.FreezeKey or kc == Enum.KeyCode.ButtonY then
+		ST.freezeAim()
+	elseif kc == CONFIG.FlingUpKey or kc == CONFIG.FlingDownKey then
+		adjustFling(kc == CONFIG.FlingUpKey and 1 or -1, UserInputService:IsKeyDown(Enum.KeyCode.LeftShift))
+	elseif kc == CONFIG.SpawnKey then
+		ST.spawn()
+	elseif kc == CONFIG.PulseKey then
+		ST.pulse()
+	elseif kc == CONFIG.ToggleViewKey then
+		toggleView()
+	elseif kc == CONFIG.SpinKey or kc == Enum.KeyCode.ButtonX then
+		toggleSpin()
+	elseif kc == CONFIG.AxisKey then
+		cycleSpinAxis()
+	elseif kc == CONFIG.ResetRotKey then
+		resetRotation()
+	elseif kc == Enum.KeyCode.DPadUp then
+		changeDist(2)
+	elseif kc == Enum.KeyCode.DPadDown then
+		changeDist(-2)
+	elseif kc == Enum.KeyCode.DPadLeft then
+		zoomBy(2)
+	elseif kc == Enum.KeyCode.DPadRight then
+		zoomBy(-2)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input, gp)
+	if gp or not equipped or panelOpen or shared.GG_RUN ~= TP.run then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseWheel then
+		if holding then
+			changeDist(input.Position.Z * 1.5)
+		else
+			zoomBy(input.Position.Z)
+		end
+	end
+end)
+
+UserInputService.TouchTapInWorld:Connect(function(pos, processed)
+	if processed or not equipped or holding or pulling or panelOpen then
+		return
+	end
+	local ray = camera:ScreenPointToRay(pos.X, pos.Y)
+	rayParams.FilterDescendantsInstances = buildFilter()
+	local res = Workspace:Raycast(ray.Origin, ray.Direction * (S.Range + camHeadOffset()), rayParams)
+	local t = res and resolveTarget(res.Instance)
+	if t then
+		tryGrab(t, (res.Position - camera.CFrame.Position).Magnitude)
+	end
+end)
+
+local ML = { on = false }
+local function updateMouseLock()
+	local want = equipped and S.View == 1 and S.LockMouse and not isTouch
+	if want then
+		ML.on = true
+		if panelOpen then
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			UserInputService.MouseIconEnabled = true
+		else
+			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+			UserInputService.MouseIconEnabled = false
+		end
+	elseif ML.on then
+		ML.on = false
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+	end
+end
+
+local function fmtNum(n)
+	if n >= 100000 then
+		return string.format("%.0fk", n / 1000)
+	elseif n >= 1000 then
+		return string.format("%.1fk", n / 1000)
+	end
+	return string.format("%.1f", n)
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	if shared.GG_RUN ~= TP.run then
+		return
+	end
+	local t = os.clock()
+	updateMouseLock()
+	TP.update(dt)
+	SH.update(dt)
+
+	if THEMES[S.Theme].rainbow then
+		setAccent(Color3.fromHSV((t * 0.18) % 1, 0.75, 1), true)
+	end
+
+	local activeAmt = (holding or pulling) and 1 or (currentAim and 0.35 or 0)
+	open = lerp(open, equipped and activeAmt or 0, 1 - math.exp(-dt * 12))
+	recoil = lerp(recoil, 0, 1 - math.exp(-dt * 9))
+	flash = lerp(flash, 0, 1 - math.exp(-dt * 7))
+
+	PG.updateBeam()
+	local live = PG.live
+	if live and live.attached and live.handle.Parent then
+		local moving = recoil > 0.002
+		if PG.dirty or moving or PG.recoilWas then
+			PG.recoilWas = moving
+			PG.dirty = false
+			PG.pose(recoil * 0.35)
+		end
+	end
+	if muzzleLight then
+		muzzleLight.Enabled = equipped
+		muzzleLight.Brightness = 0.6 + open * 1.4 + flash * 3
+	end
+	if beam1 and beam1.Enabled then
+		beam1.CurveSize0 = math.sin(t * 23) * 1.6
+		beam1.CurveSize1 = 0
+		beam2.CurveSize0 = math.cos(t * 41) * 2.4
+		beam2.CurveSize1 = 0
+		local b3 = PG.beam3
+		if b3 and b3.Enabled then
+			b3.CurveSize0 = math.sin(t * 29 + 1) * 2.2
+			b3.CurveSize1 = 0
+			b3.Width0 = 0.25 + 0.1 * math.sin(t * 18)
+			b3.Width1 = 0.5 + 0.15 * math.sin(t * 14)
+		end
+	end
+
+	if not equipped then
+		return
+	end
+
+	local locked = (currentAim ~= nil) and 1 or 0
+	local busy = (holding or pulling) and 1 or 0
+	crossLock = lerp(crossLock, locked, 1 - math.exp(-dt * 14))
+	local targetSpread = 26 - crossLock * 9 + busy * 6 + flash * 8
+	crossSpread = lerp(crossSpread, targetSpread, 1 - math.exp(-dt * 16))
+	crossSpin = (crossSpin + dt * (busy > 0 and 160 or 0)) % 360
+	cross.Rotation = crossSpin + crossLock * 45
+	for _, tk in ipairs(ticks) do
+		tk.frame.Position = UDim2.new(0.5, tk.dx * crossSpread, 0.5, tk.dy * crossSpread)
+	end
+	local rs = 34 - crossLock * 8 + busy * 10
+	crossRing.Size = UDim2.fromOffset(rs, rs)
+
+	aimTimer += dt
+	if aimTimer > 0.05 and not holding and not pulling then
+		aimTimer = 0
+		local tgt, res, off = findTarget(S.Range)
+		currentAim = tgt
+		if tgt then
+			local heavy = tgt.mass > CONFIG.MaxMass
+			highlight.Adornee = S.HighlightTarget and (tgt.model or tgt.root) or nil
+			setCrossColor(heavy and Color3.fromRGB(255, 70, 60) or accent)
+			if S.ShowTags and not tgt.humanoid then
+				tag.Adornee = tgt.root
+				tag.Enabled = true
+				tagName.Text = tgt.name or "Object"
+				tagInfo.Text = string.format("mass %s  |  %d studs", fmtNum(tgt.mass), res and math.floor(res.Distance - off) or 0)
+			else
+				tag.Enabled = false
+			end
+		else
+			highlight.Adornee = nil
+			tag.Enabled = false
+			setCrossColor(WHITE)
+		end
+	elseif holding or pulling then
+		currentAim = nil
+		highlight.Adornee = nil
+		setCrossColor(accent)
+		local cur = holding or pulling
+		if S.ShowTags and cur and cur.root and not cur.humanoid then
+			tag.Adornee = cur.root
+			tag.Enabled = true
+			tagName.Text = cur.name or "Object"
+			tagInfo.Text = string.format(
+				"mass %s  |  %d studs",
+				fmtNum(cur.mass or 0),
+				math.floor((cur.root.Position - camera.CFrame.Position).Magnitude)
+			)
+		else
+			tag.Enabled = false
+		end
+	end
+
+	if pulling then
+		local tgt = pulling
+		if not alive(tgt) or os.clock() - pullStart > CONFIG.PullTimeout then
+			stopPull()
+		else
+			local pos = holdPosition(tgt)
+			local diff = pos - tgt.root.Position
+			local d = diff.Magnitude
+			if not tgt.pullStartPos then
+				tgt.pullStartPos = tgt.root.Position
+			end
+			if os.clock() - pullStart > 1.5 and (tgt.root.Position - tgt.pullStartPos).Magnitude < 1 then
+				stopPull()
+				tgt.pullStartPos = nil
+				playSound("Deny")
+				toast(ownershipRemote and "Can't move that" or "Can't move that (server-owned)")
+			elseif d < math.max(7, tgt.radius * 0.5) then
+				grab(tgt)
+			else
+				local desired = diff.Unit * math.clamp(d * 3, 28, CONFIG.PullSpeedMax)
+				tgt.root.AssemblyLinearVelocity = tgt.root.AssemblyLinearVelocity:Lerp(desired, 0.3)
+			end
+		end
+	end
+
+	if holding then
+		local tgt = holding
+		if not alive(tgt) then
+			releaseHold()
+		else
+
+			if not panelOpen then
+				local dirR = mobileRot
+				if UserInputService:IsKeyDown(CONFIG.RotRightKey) then dirR += 1 end
+				if UserInputService:IsKeyDown(CONFIG.RotLeftKey) then dirR -= 1 end
+				if UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonR1) then dirR += 1 end
+				if UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonL1) then dirR -= 1 end
+				if dirR ~= 0 then
+					local kind
+					if UserInputService:IsKeyDown(CONFIG.RollKey) then
+						kind = 3
+					elseif UserInputService:IsKeyDown(CONFIG.PitchKey) then
+						kind = 2
+					elseif UserInputService.KeyboardEnabled and mobileRot == 0 then
+						kind = 1
+					else
+						kind = S.SpinAxis
+					end
+					rotateHeld(tgt, axisVec(kind), math.clamp(dirR, -1, 1) * S.RotSpeed * dt)
+				end
+			end
+
+			if S.AutoSpin then
+				rotateHeld(tgt, axisVec(S.SpinAxis), S.SpinSpeed * dt)
+			end
+
+			if holdAP then
+				holdAP.Responsiveness = S.Snappiness
+				holdAO.Responsiveness = math.clamp(S.Snappiness * 0.7, 8, 70)
+			end
+
+			local pos = holdPosition(tgt)
+			holder.CFrame = CFrame.new(pos) * heldRotation(tgt)
+			if (tgt.root.Position - pos).Magnitude > CONFIG.BreakDistance then
+				releaseHold()
+				playSound("Drop")
+				toast("Lost grip")
+			end
+		end
+	end
+
+	if holding and S.ShowArc and alive(holding) then
+		ARC.timer += dt
+		if ARC.timer > 0.04 then
+			ARC.timer = 0
+			ARC.update(holding)
+		end
+	elseif ARC.shown then
+		ARC.hide()
+	end
+
+	if grabBtn then
+		grabBtn.Text = holding and "Drop" or (pulling and "Cancel" or "Grab")
+	end
+
+	hudTimer += dt
+	if hudTimer > 0.1 then
+		hudTimer = 0
+		local state, chip = "Ready", DIM
+		if panelOpen then
+			state = "Options"
+		elseif holding then
+			state, chip = "Holding", Color3.fromRGB(125, 205, 145)
+		elseif pulling then
+			state, chip = "Pulling", Color3.fromRGB(110, 225, 255)
+		elseif currentAim then
+			state, chip = "Locked", accent
+		end
+		UI.status.Text = state
+		UI.status.TextColor3 = chip
+		local R = UI.rows
+		local cur = holding or pulling or currentAim
+		if cur and cur.root then
+			R.target.Text = cur.name or "Object"
+			R.mass.Text = fmtNum(cur.mass or 0)
+			R.dist.Text = string.format("%d studs", math.floor((cur.root.Position - camera.CFrame.Position).Magnitude))
+		else
+			R.target.Text, R.mass.Text, R.dist.Text = "-", "-", "-"
+		end
+		R.hold.Text = string.format("%.0f studs", holdDist)
+		UI.holdFill.Size = UDim2.fromScale(
+			math.sqrt(math.clamp((holdDist - CONFIG.MinHoldDistance) / (CONFIG.MaxHoldDistance - CONFIG.MinHoldDistance), 0, 1)),
+			1
+		)
+		R.npc.Text = string.format("%d studs", S.NpcDistance)
+		R.obj.Text = string.format("%d studs", S.ObjectDistance)
+	end
+end)
+
+task.spawn(function()
+	task.wait(1)
+	ST.notified = true
+	local ws = Instance.new("Sound")
+	ws.SoundId = CONFIG.WelcomeSoundId ~= 0 and ("rbxassetid://" .. CONFIG.WelcomeSoundId) or "rbxasset://sounds/electronicpingshort.wav"
+	ws.Volume = 1
+	ws.Parent = SoundService
+	ws:Play()
+	Debris:AddItem(ws, 10)
+	local ok = pcall(function()
+		StarterGui:SetCore("SendNotification", { Title = CONFIG.NotifyTitle, Text = CONFIG.NotifyText, Duration = 6, Button1 = "OK" })
+	end)
+	if not ok then
+		toast(CONFIG.NotifyTitle .. " - " .. CONFIG.NotifyText, true)
+	end
+end)
+print("[GravityGun v10] loaded. Equip 'Gravity Gun' from your hotbar. Press O for options, C to change camera view.")
+
+end, function(e)
+	return debug.traceback(tostring(e), 2)
+end)
+if not __ggOk then
+	warn("[GravityGun] FAILED TO LOAD:\n" .. tostring(__ggErr))
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("SendNotification", {
+			Title = "Gravity Gun failed to load",
+			Text = tostring(__ggErr):sub(1, 200),
+			Duration = 20,
+		})
+	end)
+end
