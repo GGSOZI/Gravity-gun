@@ -83,16 +83,60 @@ if next(CONFIG.AdminUserIds) ~= nil and not CONFIG.AdminUserIds[player.UserId] t
 	return
 end
 
+-- Some games delete every unknown ScreenGui the moment it lands in PlayerGui
+-- ("Something unexpectedly tried to set the parent of GravityGunUI to NULL").
+-- So every GUI of this script is mounted in the executor's protected container
+-- (gethui / CoreGui) first, and PlayerGui is only the fallback.
+local GUI_HOST
+do
+	local host
+	pcall(function()
+		if gethui then
+			host = gethui()
+		end
+	end)
+	if not host then
+		pcall(function()
+			host = game:GetService("CoreGui")
+			local _ = host.Name
+		end)
+	end
+	GUI_HOST = host
+end
+local function mountGui(g)
+	pcall(function()
+		if syn and syn.protect_gui then
+			syn.protect_gui(g)
+		end
+	end)
+	local targets = {}
+	if GUI_HOST then
+		table.insert(targets, GUI_HOST)
+	end
+	table.insert(targets, player:WaitForChild("PlayerGui"))
+	for _, h in ipairs(targets) do
+		local ok = pcall(function()
+			g.Parent = h
+		end)
+		if ok and g.Parent == h then
+			return true
+		end
+	end
+	return false
+end
+
 shared.GG_RUN = (shared.GG_RUN or 0) + 1
 pcall(function()
 	RunService:UnbindFromRenderStep("GravityGunZoom")
 end)
 pcall(function()
 	local pg = player:WaitForChild("PlayerGui", 10)
-	for _, n in ipairs({ "GravityGunUI", "GravityGunButtons", "GravityTag" }) do
-		local o = pg and pg:FindFirstChild(n)
-		if o then
-			o:Destroy()
+	for _, container in ipairs({ pg, GUI_HOST }) do
+		for _, n in ipairs({ "GravityGunUI", "GravityGunButtons", "GravityTag" }) do
+			local o = container and container:FindFirstChild(n)
+			if o then
+				o:Destroy()
+			end
 		end
 	end
 	for _, n in ipairs({ "GravityHolder", "GravityGunNPCs", "GravityGunPortals" }) do
@@ -212,9 +256,9 @@ local lastCamCF = camera.CFrame
 local aimTimer, hudTimer = 0, 0
 local ST = { fovKick = 0 }
 
+-- many mobile executors report a fake keyboard/mouse, so the old "no keyboard AND no mouse" check
+-- never built the touch buttons. A touch screen is enough to get them.
 local isTouch = UserInputService.TouchEnabled
-	and not UserInputService.KeyboardEnabled
-	and not UserInputService.MouseEnabled
 
 local findTarget, freezeTarget, grabToggle, punt, toast
 local setPanel, resetRotation, toggleSpin, cycleSpinAxis, changeDist, zoomBy, applyCrosshair, applyHudVisibility
@@ -760,17 +804,24 @@ local PANEL_BG = Color3.fromRGB(22, 22, 24)
 local DIM = Color3.fromRGB(188, 188, 193)
 local EDGE = Color3.fromRGB(66, 66, 70)
 
+-- created without a parent, then mounted in the protected container
 local gui = new("ScreenGui", {
 	Name = "GravityGunUI",
 	ResetOnSpawn = false,
 	IgnoreGuiInset = true,
 	DisplayOrder = 50,
-}, player:WaitForChild("PlayerGui"))
+})
+if not mountGui(gui) then
+	warn("[GravityGun] could not mount GravityGunUI")
+end
 
-local btnGui = new("ScreenGui", { Name = "GravityGunButtons", ResetOnSpawn = false, DisplayOrder = 52 }, player.PlayerGui)
+local btnGui = new("ScreenGui", { Name = "GravityGunButtons", ResetOnSpawn = false, DisplayOrder = 52 })
 pcall(function()
 	btnGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
 end)
+if not mountGui(btnGui) then
+	warn("[GravityGun] could not mount GravityGunButtons")
+end
 
 local cross = new("Frame", {
 	Name = "Crosshair",
@@ -962,7 +1013,8 @@ local tag = new("BillboardGui", {
 	LightInfluence = 0,
 	ExtentsOffsetWorldSpace = Vector3.new(0, 1.2, 0),
 	Enabled = false,
-}, player.PlayerGui)
+})
+mountGui(tag)
 local tagBg = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = PANEL_BG, BackgroundTransparency = 0.2 }, tag)
 corner(tagBg, 0, 4)
 new("UIStroke", { Thickness = 1, Color = EDGE }, tagBg)
@@ -2865,7 +2917,7 @@ RunService:BindToRenderStep("GravityGunZoom", Enum.RenderPriority.Camera.Value +
 		end
 		curFov = lerp(curFov, targetFov, 1 - math.exp(-dt * 12))
 		ST.fovKick = ST.fovKick * math.exp(-dt * 7)
-			camera.FieldOfView = curFov + ST.fovKick
+		camera.FieldOfView = curFov + ST.fovKick
 		UserInputService.MouseDeltaSensitivity = savedSens * math.clamp(curFov / baseFov, 0.1, 1)
 		zoomWasActive = true
 	elseif zoomWasActive then
